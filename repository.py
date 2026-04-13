@@ -2,13 +2,17 @@
 Staylio Cost Control Console — Repository Layer
 Postgres/Supabase-backed. All tables from the approved data model.
 
-FIXES vs ChatGPT output:
-- vendor_accounts table added (was designed, never bootstrapped)
-- cost_attribution table added (was the whole point, never implemented)
-- Idempotent upserts on usage_events and cost_events (no duplicate rows on re-sync)
-- All indexes from the data model spec
-- Vendor seed rows for Railway and Cloudflare, not just OpenAI
-- get_summary_metrics returns attribution data too
+All SQL references use explicit cost_console.<table> qualification.
+Never rely on search_path — pooled connections do not inherit role-level settings.
+
+Table name mapping:
+  cost_console.vendors
+  cost_console.vendor_accounts
+  cost_console.usage_events          (was incorrectly 'cost_usage_events' in prior version)
+  cost_console.cost_events
+  cost_console.cost_attribution
+  cost_console.operational_estimates
+  cost_console.sync_runs
 """
 
 from __future__ import annotations
@@ -145,7 +149,7 @@ class PostgresCostConsoleRepository:
             for e in events:
                 cur.execute(
                     """
-                    INSERT INTO cost_usage_events (
+                    INSERT INTO cost_console.usage_events (
                         usage_event_id, vendor_id, vendor_account_id,
                         service_name, metric_name, metric_unit, quantity,
                         event_start_at, event_end_at, source_reference,
@@ -183,7 +187,7 @@ class PostgresCostConsoleRepository:
             for e in events:
                 cur.execute(
                     """
-                    INSERT INTO cost_events (
+                    INSERT INTO cost_console.cost_events (
                         cost_event_id, vendor_id, vendor_account_id,
                         service_name, cost_category, cost_usd,
                         incurred_at, source_reference, raw_payload_json
@@ -207,14 +211,14 @@ class PostgresCostConsoleRepository:
         return inserted
 
     # ------------------------------------------------------------------
-    # Cost attribution — the most important table
+    # Cost attribution
     # ------------------------------------------------------------------
 
     def insert_cost_attribution(self, attr: CostAttribution) -> None:
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO cost_attribution (
+                INSERT INTO cost_console.cost_attribution (
                     attribution_id, usage_event_id, cost_event_id,
                     property_id, workflow_name, slot_name, job_id,
                     environment, attribution_method, attribution_confidence, notes
@@ -244,7 +248,7 @@ class PostgresCostConsoleRepository:
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO operational_estimates (
+                INSERT INTO cost_console.operational_estimates (
                     estimate_id, vendor_id, service_name, model,
                     estimated_cost_usd, property_id, workflow_name,
                     slot_name, job_id, environment, generation_reason,
@@ -277,7 +281,7 @@ class PostgresCostConsoleRepository:
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO sync_runs (
+                INSERT INTO cost_console.sync_runs (
                     sync_run_id, vendor_id, started_at, completed_at,
                     status, rows_ingested, error_summary
                 ) VALUES (%s,%s,%s,%s,%s,%s,%s)
@@ -297,7 +301,7 @@ class PostgresCostConsoleRepository:
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute(
                 """
-                UPDATE sync_runs
+                UPDATE cost_console.sync_runs
                 SET completed_at=%s, status=%s, rows_ingested=%s, error_summary=%s
                 WHERE sync_run_id=%s
                 """,
@@ -320,7 +324,7 @@ class PostgresCostConsoleRepository:
             cur.execute(
                 """
                 SELECT vendor_id, COALESCE(SUM(cost_usd),0) as cost_usd
-                FROM cost_events
+                FROM cost_console.cost_events
                 WHERE incurred_at >= CURRENT_DATE
                 GROUP BY vendor_id
                 ORDER BY cost_usd DESC
@@ -332,7 +336,7 @@ class PostgresCostConsoleRepository:
             cur.execute(
                 """
                 SELECT vendor_id, COALESCE(SUM(cost_usd),0) as cost_usd
-                FROM cost_events
+                FROM cost_console.cost_events
                 WHERE incurred_at >= date_trunc('month', CURRENT_DATE)
                 GROUP BY vendor_id
                 ORDER BY cost_usd DESC
@@ -347,10 +351,10 @@ class PostgresCostConsoleRepository:
             cur.execute(
                 """
                 SELECT vendor_id, status, completed_at
-                FROM sync_runs
+                FROM cost_console.sync_runs
                 WHERE sync_run_id IN (
                     SELECT DISTINCT ON (vendor_id) sync_run_id
-                    FROM sync_runs
+                    FROM cost_console.sync_runs
                     ORDER BY vendor_id, started_at DESC
                 )
                 """
@@ -361,7 +365,7 @@ class PostgresCostConsoleRepository:
             cur.execute(
                 """
                 SELECT COUNT(*) as n
-                FROM sync_runs
+                FROM cost_console.sync_runs
                 WHERE status='failed'
                 AND started_at > NOW() - INTERVAL '24 hours'
                 """
@@ -376,7 +380,7 @@ class PostgresCostConsoleRepository:
                     property_id,
                     workflow_name,
                     COALESCE(SUM(estimated_cost_usd),0) as est_cost
-                FROM operational_estimates
+                FROM cost_console.operational_estimates
                 WHERE occurred_at >= CURRENT_DATE
                 GROUP BY property_id, workflow_name
                 ORDER BY est_cost DESC
@@ -428,13 +432,13 @@ def stable_id(*parts: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Bootstrap SQL
+# Bootstrap SQL — schema-qualified, idempotent
 # ---------------------------------------------------------------------------
 
 BOOTSTRAP_SQL = [
     # vendors
     """
-    CREATE TABLE IF NOT EXISTS vendors (
+    CREATE TABLE IF NOT EXISTS cost_console.vendors (
         vendor_id TEXT PRIMARY KEY,
         vendor_name TEXT NOT NULL,
         category TEXT,
@@ -442,11 +446,11 @@ BOOTSTRAP_SQL = [
         is_active BOOLEAN DEFAULT TRUE
     )
     """,
-    # vendor_accounts (was designed, was never created — fixed here)
+    # vendor_accounts
     """
-    CREATE TABLE IF NOT EXISTS vendor_accounts (
+    CREATE TABLE IF NOT EXISTS cost_console.vendor_accounts (
         vendor_account_id TEXT PRIMARY KEY,
-        vendor_id TEXT NOT NULL REFERENCES vendors(vendor_id),
+        vendor_id TEXT NOT NULL REFERENCES cost_console.vendors(vendor_id),
         account_name TEXT,
         account_reference TEXT,
         environment TEXT NOT NULL DEFAULT 'production',
@@ -454,11 +458,11 @@ BOOTSTRAP_SQL = [
         is_active BOOLEAN DEFAULT TRUE
     )
     """,
-    # usage_events — PRIMARY KEY enforces idempotency
+    # usage_events
     """
-    CREATE TABLE IF NOT EXISTS cost_usage_events (
+    CREATE TABLE IF NOT EXISTS cost_console.usage_events (
         usage_event_id TEXT PRIMARY KEY,
-        vendor_id TEXT NOT NULL REFERENCES vendors(vendor_id),
+        vendor_id TEXT NOT NULL REFERENCES cost_console.vendors(vendor_id),
         vendor_account_id TEXT,
         service_name TEXT,
         metric_name TEXT,
@@ -472,12 +476,12 @@ BOOTSTRAP_SQL = [
     )
     """,
     """CREATE INDEX IF NOT EXISTS idx_usage_vendor_time
-       ON cost_usage_events(vendor_id, event_start_at)""",
-    # cost_events — PRIMARY KEY enforces idempotency
+       ON cost_console.usage_events(vendor_id, event_start_at)""",
+    # cost_events
     """
-    CREATE TABLE IF NOT EXISTS cost_events (
+    CREATE TABLE IF NOT EXISTS cost_console.cost_events (
         cost_event_id TEXT PRIMARY KEY,
-        vendor_id TEXT NOT NULL REFERENCES vendors(vendor_id),
+        vendor_id TEXT NOT NULL REFERENCES cost_console.vendors(vendor_id),
         vendor_account_id TEXT,
         service_name TEXT,
         cost_category TEXT,
@@ -489,13 +493,13 @@ BOOTSTRAP_SQL = [
     )
     """,
     """CREATE INDEX IF NOT EXISTS idx_cost_vendor_time
-       ON cost_events(vendor_id, incurred_at)""",
-    # cost_attribution — the most important table, was never implemented
+       ON cost_console.cost_events(vendor_id, incurred_at)""",
+    # cost_attribution
     """
-    CREATE TABLE IF NOT EXISTS cost_attribution (
+    CREATE TABLE IF NOT EXISTS cost_console.cost_attribution (
         attribution_id TEXT PRIMARY KEY,
-        usage_event_id TEXT REFERENCES cost_usage_events(usage_event_id),
-        cost_event_id TEXT REFERENCES cost_events(cost_event_id),
+        usage_event_id TEXT REFERENCES cost_console.usage_events(usage_event_id),
+        cost_event_id TEXT REFERENCES cost_console.cost_events(cost_event_id),
         property_id TEXT,
         workflow_name TEXT,
         slot_name TEXT,
@@ -508,12 +512,12 @@ BOOTSTRAP_SQL = [
     )
     """,
     """CREATE INDEX IF NOT EXISTS idx_attr_property
-       ON cost_attribution(property_id, workflow_name)""",
+       ON cost_console.cost_attribution(property_id, workflow_name)""",
     """CREATE INDEX IF NOT EXISTS idx_attr_job
-       ON cost_attribution(job_id)""",
+       ON cost_console.cost_attribution(job_id)""",
     # operational_estimates
     """
-    CREATE TABLE IF NOT EXISTS operational_estimates (
+    CREATE TABLE IF NOT EXISTS cost_console.operational_estimates (
         estimate_id TEXT PRIMARY KEY,
         vendor_id TEXT NOT NULL,
         service_name TEXT,
@@ -531,10 +535,10 @@ BOOTSTRAP_SQL = [
     )
     """,
     """CREATE INDEX IF NOT EXISTS idx_est_property_time
-       ON operational_estimates(property_id, occurred_at)""",
+       ON cost_console.operational_estimates(property_id, occurred_at)""",
     # sync_runs
     """
-    CREATE TABLE IF NOT EXISTS sync_runs (
+    CREATE TABLE IF NOT EXISTS cost_console.sync_runs (
         sync_run_id TEXT PRIMARY KEY,
         vendor_id TEXT NOT NULL,
         started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -545,18 +549,19 @@ BOOTSTRAP_SQL = [
     )
     """,
     """CREATE INDEX IF NOT EXISTS idx_sync_vendor_time
-       ON sync_runs(vendor_id, started_at DESC)""",
-    # --- Seed vendors (all 8 priority vendors, not just OpenAI) ---
+       ON cost_console.sync_runs(vendor_id, started_at DESC)""",
+    # --- Seed vendors ---
     """
-    INSERT INTO vendors (vendor_id, vendor_name, category, billing_model) VALUES
-        ('openai',     'OpenAI',         'llm',     'usage'),
-        ('railway',    'Railway',        'infra',   'usage'),
-        ('cloudflare_r2', 'Cloudflare R2', 'storage', 'usage'),
-        ('elevenlabs', 'ElevenLabs',     'audio',   'usage'),
-        ('creatomate', 'Creatomate',     'video',   'usage'),
-        ('claid',      'Claid',          'image',   'usage'),
-        ('runway',     'Runway',         'video',   'usage'),
-        ('supabase',   'Supabase',       'database','usage')
+    INSERT INTO cost_console.vendors (vendor_id, vendor_name, category, billing_model) VALUES
+        ('anthropic',     'Anthropic',      'llm',      'usage'),
+        ('openai',        'OpenAI',         'llm',      'usage'),
+        ('railway',       'Railway',        'infra',    'usage'),
+        ('cloudflare_r2', 'Cloudflare R2',  'storage',  'usage'),
+        ('elevenlabs',    'ElevenLabs',     'audio',    'usage'),
+        ('creatomate',    'Creatomate',     'video',    'usage'),
+        ('claid',         'Claid',          'image',    'usage'),
+        ('runway',        'Runway',         'video',    'usage'),
+        ('supabase',      'Supabase',       'database', 'usage')
     ON CONFLICT (vendor_id) DO NOTHING
     """,
 ]
