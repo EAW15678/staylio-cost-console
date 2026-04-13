@@ -19,7 +19,7 @@ from decimal import Decimal
 from typing import Annotated, Any
 
 import uvicorn
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -344,6 +344,105 @@ def get_property_costs(
         ],
         "mtd_total": round(sum(float(r["cost"]) for r in rows), 4),
     }
+
+
+# --- Phase 3: Reporting endpoints ---
+
+@app.get("/metrics/vendors")
+def get_vendor_breakdown(
+    auth: Auth,
+    period: str = Query("30d", regex="^(24h|7d|30d)$"),
+    repo: PostgresCostConsoleRepository = Depends(get_repo),
+) -> dict:
+    try:
+        rows = repo.get_vendor_spend(period)
+        return {
+            "period": period,
+            "vendors": [
+                {
+                    "vendor_id": r["vendor_id"],
+                    "vendor_name": r["vendor_name"],
+                    "category": r["category"],
+                    "cost_usd": round(float(r["total_cost"]), 4),
+                    "event_count": r["event_count"],
+                }
+                for r in rows
+            ],
+            "total": round(sum(float(r["total_cost"]) for r in rows), 4),
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+@app.get("/metrics/category")
+def get_category_breakdown(
+    auth: Auth,
+    period: str = Query("30d", regex="^(24h|7d|30d)$"),
+    repo: PostgresCostConsoleRepository = Depends(get_repo),
+) -> dict:
+    try:
+        rows = repo.get_category_spend(period)
+        return {
+            "period": period,
+            "categories": [
+                {
+                    "category": r["category"],
+                    "cost_usd": round(float(r["total_cost"]), 4),
+                    "event_count": r["event_count"],
+                    "vendor_count": r["vendor_count"],
+                }
+                for r in rows
+            ],
+            "total": round(sum(float(r["total_cost"]) for r in rows), 4),
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+@app.get("/metrics/workflows")
+def get_workflow_breakdown(
+    auth: Auth,
+    period: str = Query("30d", regex="^(24h|7d|30d)$"),
+    repo: PostgresCostConsoleRepository = Depends(get_repo),
+) -> dict:
+    try:
+        rows = repo.get_workflow_spend(period)
+        return {
+            "period": period,
+            "workflows": [
+                {
+                    "workflow_name": r["workflow_name"],
+                    "cost_usd": round(float(r["total_cost"]), 4),
+                    "event_count": r["event_count"],
+                    "property_count": r["property_count"],
+                }
+                for r in rows
+            ],
+            "total": round(sum(float(r["total_cost"]) for r in rows), 4),
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+@app.get("/metrics/timeseries")
+def get_timeseries(
+    auth: Auth,
+    period: str = Query("30d", regex="^(24h|7d|30d)$"),
+    repo: PostgresCostConsoleRepository = Depends(get_repo),
+) -> dict:
+    try:
+        rows = repo.get_timeseries_spend(period)
+        return {
+            "period": period,
+            "series": [
+                {
+                    "date": r["date"].isoformat() if r["date"] else None,
+                    "cost_usd": round(float(r["total_cost"]), 4),
+                    "event_count": r["event_count"],
+                }
+                for r in rows
+            ],
+            "total": round(sum(float(r["total_cost"]) for r in rows), 4),
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------

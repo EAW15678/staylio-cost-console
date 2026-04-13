@@ -419,6 +419,81 @@ class PostgresCostConsoleRepository:
                 ],
             }
 
+    def get_vendor_spend(self, period: str = "30d") -> list[dict[str, Any]]:
+        interval = {"24h": "24 hours", "7d": "7 days", "30d": "30 days"}.get(period, "30 days")
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                    ce.vendor_id,
+                    v.vendor_name,
+                    v.category,
+                    COALESCE(SUM(ce.cost_usd), 0) as total_cost,
+                    COUNT(*) as event_count
+                FROM cost_console.cost_events ce
+                JOIN cost_console.vendors v ON v.vendor_id = ce.vendor_id
+                WHERE ce.incurred_at >= NOW() - INTERVAL '{interval}'
+                GROUP BY ce.vendor_id, v.vendor_name, v.category
+                ORDER BY total_cost DESC
+                """,
+            )
+            return cur.fetchall()
+
+    def get_category_spend(self, period: str = "30d") -> list[dict[str, Any]]:
+        interval = {"24h": "24 hours", "7d": "7 days", "30d": "30 days"}.get(period, "30 days")
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                    v.category,
+                    COALESCE(SUM(ce.cost_usd), 0) as total_cost,
+                    COUNT(*) as event_count,
+                    COUNT(DISTINCT ce.vendor_id) as vendor_count
+                FROM cost_console.cost_events ce
+                JOIN cost_console.vendors v ON v.vendor_id = ce.vendor_id
+                WHERE ce.incurred_at >= NOW() - INTERVAL '{interval}'
+                GROUP BY v.category
+                ORDER BY total_cost DESC
+                """,
+            )
+            return cur.fetchall()
+
+    def get_workflow_spend(self, period: str = "30d") -> list[dict[str, Any]]:
+        interval = {"24h": "24 hours", "7d": "7 days", "30d": "30 days"}.get(period, "30 days")
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                    oe.workflow_name,
+                    COALESCE(SUM(oe.estimated_cost_usd), 0) as total_cost,
+                    COUNT(*) as event_count,
+                    COUNT(DISTINCT oe.property_id) as property_count
+                FROM cost_console.operational_estimates oe
+                WHERE oe.occurred_at >= NOW() - INTERVAL '{interval}'
+                AND oe.workflow_name IS NOT NULL
+                GROUP BY oe.workflow_name
+                ORDER BY total_cost DESC
+                """,
+            )
+            return cur.fetchall()
+
+    def get_timeseries_spend(self, period: str = "30d") -> list[dict[str, Any]]:
+        interval = {"24h": "24 hours", "7d": "7 days", "30d": "30 days"}.get(period, "30 days")
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                    date_trunc('day', ce.incurred_at)::date as date,
+                    COALESCE(SUM(ce.cost_usd), 0) as total_cost,
+                    COUNT(*) as event_count
+                FROM cost_console.cost_events ce
+                WHERE ce.incurred_at >= NOW() - INTERVAL '{interval}'
+                GROUP BY date_trunc('day', ce.incurred_at)::date
+                ORDER BY date ASC
+                """,
+            )
+            return cur.fetchall()
+
 
 # ---------------------------------------------------------------------------
 # Stable ID helper (deterministic UUID from content)
