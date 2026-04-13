@@ -321,7 +321,7 @@ def get_property_costs(
             SELECT workflow_name, slot_name,
                    COALESCE(SUM(estimated_cost_usd),0) as cost,
                    COUNT(*) as events
-            FROM operational_estimates
+            FROM cost_console.operational_estimates
             WHERE property_id = %s
             AND occurred_at >= date_trunc('month', CURRENT_DATE)
             GROUP BY workflow_name, slot_name
