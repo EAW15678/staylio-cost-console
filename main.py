@@ -116,6 +116,10 @@ class R2SyncRequest(BaseModel):
     days_back: int = 1
 
 
+class AnthropicSyncRequest(BaseModel):
+    days_back: int = 7
+
+
 class SummaryResponse(BaseModel):
     today_spend: float
     mtd_spend: float
@@ -199,6 +203,33 @@ def sync_r2_usage(
         return {
             "status": sync_run.status,
             "vendor": "cloudflare_r2",
+            "sync_run_id": sync_run.sync_run_id,
+            "rows_ingested": sync_run.rows_ingested,
+            "error": sync_run.error_summary,
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+# --- Anthropic ---
+
+@app.post("/sync/anthropic/cost")
+def sync_anthropic_cost(
+    auth: Auth,
+    payload: AnthropicSyncRequest = AnthropicSyncRequest(),
+    repo: PostgresCostConsoleRepository = Depends(get_repo),
+) -> dict:
+    """Sync cost data from Anthropic Admin API. Requires ANTHROPIC_ADMIN_KEY env var."""
+    admin_key = os.environ.get("ANTHROPIC_ADMIN_KEY")
+    if not admin_key:
+        raise HTTPException(status_code=503, detail="ANTHROPIC_ADMIN_KEY not configured")
+    try:
+        from connectors.anthropic import AnthropicCostConnector
+        connector = AnthropicCostConnector(repo=repo, admin_api_key=admin_key)
+        sync_run = connector.sync_cost_report(days_back=payload.days_back)
+        return {
+            "status": sync_run.status,
+            "vendor": "anthropic",
             "sync_run_id": sync_run.sync_run_id,
             "rows_ingested": sync_run.rows_ingested,
             "error": sync_run.error_summary,
