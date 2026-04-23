@@ -21,7 +21,7 @@ const propertyRows = [
   { property_id: "placeholder", name: "Pending Property", subdomain: "pending.staylio.ai", total_cost: 0, listing_generation: 0, video_generation: 0, event_count: 0, status: "Queued" },
 ];
 
-const periods = ["24h", "7d", "30d", "MTD"];
+const periods = ["24h", "7d", "30d", "MTD", "Custom"];
 const viewModes = ["Combined", "Actual", "Estimated"];
 
 function money(v) { return `$${(v ?? 0).toFixed(2)}`; }
@@ -116,7 +116,11 @@ function WorkflowPanel({ rows }) {
   );
 }
 
+// Sticky bg colour — approximation of page bg (#111e35) so content doesn't bleed through
+const STICKY_BG = "bg-[#111e35]";
+
 function VendorTable({ rows }) {
+  const cols = ['Vendor','Category','Status','Cost Type','Period Spend','Events'];
   return (
     <div className="rounded-2xl border border-white/10 bg-white/5 overflow-hidden">
       <div className="px-6 pt-6 pb-4 lg:px-8 lg:pt-8">
@@ -126,8 +130,13 @@ function VendorTable({ rows }) {
         <table className="w-full min-w-[820px] border-collapse">
           <thead>
             <tr className="border-y border-white/8 bg-white/[0.02]">
-              {['Vendor','Category','Status','Cost Type','Period Spend','Events'].map(h=>(
-                <th key={h} className="px-6 py-4 text-left text-[0.68rem] font-bold uppercase tracking-[0.14em] text-white/30">{h}</th>
+              {cols.map((h,i)=>(
+                <th
+                  key={h}
+                  className={`px-6 py-4 text-left text-[0.68rem] font-bold uppercase tracking-[0.14em] text-white/30 ${i===0?`sticky left-0 z-10 ${STICKY_BG}`:''}`}
+                >
+                  {h}
+                </th>
               ))}
             </tr>
           </thead>
@@ -137,8 +146,12 @@ function VendorTable({ rows }) {
               const type=v.vendor_id==='late'?'amortized':v.inactive?'inactive':'usage-based';
               return (
                 <tr key={v.vendor_id} className="border-b border-white/6 hover:bg-white/[0.02] transition">
-                  <td className="px-6 py-4 text-white font-medium">{v.vendor_name}</td>
-                  <td className="px-6 py-4 text-sm text-white/65">{v.category}</td>
+                  <td className={`px-6 py-4 font-medium sticky left-0 z-10 ${STICKY_BG} max-w-[160px]`}>
+                    <span className="block truncate text-white" title={v.vendor_name}>{v.vendor_name}</span>
+                  </td>
+                  <td className="px-6 py-4 text-sm text-white/65 max-w-[120px]">
+                    <span className="block truncate" title={v.category}>{v.category}</span>
+                  </td>
                   <td className="px-6 py-4">
                     <span className={`inline-flex rounded-full border px-2.5 py-1 text-[0.7rem] font-semibold ${status==='Active'?'border-[#0E6B72]/40 bg-[#0E6B72]/20 text-[#6dd5dc]':'border-white/10 bg-white/6 text-white/45'}`}>{status}</span>
                   </td>
@@ -157,6 +170,7 @@ function VendorTable({ rows }) {
 
 function PropertyPanel({ rows, selected, onSelect }) {
   const current = rows.find(r=>r.property_id===selected)??rows[0];
+  const cols = ['Property','Total Cost','Listing','Video','Events','Status'];
   return (
     <div className="grid gap-6 xl:grid-cols-[1fr_.95fr]">
       <div className="rounded-2xl border border-white/10 bg-white/5 overflow-hidden">
@@ -167,15 +181,23 @@ function PropertyPanel({ rows, selected, onSelect }) {
           <table className="w-full min-w-[760px] border-collapse">
             <thead>
               <tr className="border-y border-white/8 bg-white/[0.02]">
-                {['Property','Total Cost','Listing','Video','Events','Status'].map(h=>(
-                  <th key={h} className="px-6 py-4 text-left text-[0.68rem] font-bold uppercase tracking-[0.14em] text-white/30">{h}</th>
+                {cols.map((h,i)=>(
+                  <th
+                    key={h}
+                    className={`px-6 py-4 text-left text-[0.68rem] font-bold uppercase tracking-[0.14em] text-white/30 ${i===0?`sticky left-0 z-10 ${STICKY_BG}`:''}`}
+                  >
+                    {h}
+                  </th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {rows.map(p=>(
                 <tr key={p.property_id} className={`border-b border-white/6 transition hover:bg-white/[0.02] cursor-pointer ${selected===p.property_id?'bg-white/[0.03]':''}`} onClick={()=>onSelect(p.property_id)}>
-                  <td className="px-6 py-4"><div className="font-medium text-white">{p.name}</div><div className="mt-1 text-xs text-white/30">{p.subdomain}</div></td>
+                  <td className={`px-6 py-4 sticky left-0 z-10 ${STICKY_BG} max-w-[180px]`}>
+                    <div className="font-medium text-white truncate" title={p.name}>{p.name}</div>
+                    <div className="mt-1 text-xs text-white/30 truncate" title={p.subdomain}>{p.subdomain}</div>
+                  </td>
                   <td className="px-6 py-4 font-serif text-xl text-[#6dd5dc]">{money(p.total_cost)}</td>
                   <td className="px-6 py-4 text-white/75">{money(p.listing_generation)}</td>
                   <td className="px-6 py-4 text-white/75">{money(p.video_generation)}</td>
@@ -251,6 +273,12 @@ export default function StaylioCostConsoleDashboard() {
   const [period, setPeriod] = useState('30d');
   const [mode, setMode] = useState('Combined');
   const [selectedProperty, setSelectedProperty] = useState('vista-azule');
+
+  // Custom date range state
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd, setCustomEnd] = useState('');
+  const [appliedCustom, setAppliedCustom] = useState(null); // { start, end } when active
+
   const [summary, setSummary] = useState(null);
   const [vendors, setVendors] = useState(null);
   const [workflows, setWorkflows] = useState(null);
@@ -259,19 +287,26 @@ export default function StaylioCostConsoleDashboard() {
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    const p = apiPeriod(period);
+    // If Custom selected but not yet applied, hold — wait for Apply
+    if (period === 'Custom' && !appliedCustom) return;
+
     setLoading(true);
     setError(null);
+
+    const params = appliedCustom
+      ? `start_date=${appliedCustom.start}&end_date=${appliedCustom.end}`
+      : `period=${apiPeriod(period)}`;
+
     Promise.all([
       apiFetch('/metrics/summary'),
-      apiFetch(`/metrics/vendors?period=${p}`),
-      apiFetch(`/metrics/workflows?period=${p}`),
-      apiFetch(`/metrics/timeseries?period=${p}`),
+      apiFetch(`/metrics/vendors?${params}`),
+      apiFetch(`/metrics/workflows?${params}`),
+      apiFetch(`/metrics/timeseries?${params}`),
     ]).then(([s,v,w,t]) => {
       setSummary(s); setVendors(v); setWorkflows(w); setTimeseries(t);
       setLoading(false);
     }).catch(err => { setError(err.message); setLoading(false); });
-  }, [period]);
+  }, [period, appliedCustom]);
 
   const todaySpend = summary?.today_spend ?? 0;
   const mtdSpend = summary?.mtd_spend ?? 0;
@@ -295,6 +330,31 @@ export default function StaylioCostConsoleDashboard() {
     return mergeSeries(buildActualSeries(timeseries), buildEstimatedSeries(estimatedTotal));
   }, [timeseries, estimatedTotal]);
 
+  function handlePeriodClick(p) {
+    setPeriod(p);
+    if (p !== 'Custom') {
+      // Switching away from custom — clear applied range so quick filter takes effect
+      setAppliedCustom(null);
+    }
+  }
+
+  function handleApply() {
+    if (customStart && customEnd) {
+      setAppliedCustom({ start: customStart, end: customEnd });
+    }
+  }
+
+  function handleReset() {
+    setPeriod('30d');
+    setAppliedCustom(null);
+    setCustomStart('');
+    setCustomEnd('');
+  }
+
+  const subtitleText = appliedCustom
+    ? `Custom range: ${appliedCustom.start} → ${appliedCustom.end}`
+    : 'All data is live from the Cost Console API. Period filter re-fetches all panels.';
+
   return (
     <div className="min-h-screen overflow-hidden bg-[#111e35] text-white relative">
       <div className="pointer-events-none absolute inset-0 opacity-[0.04]" style={{backgroundImage:'linear-gradient(rgba(110,213,220,0.5) 1px, transparent 1px), linear-gradient(90deg, rgba(110,213,220,0.5) 1px, transparent 1px)',backgroundSize:'60px 60px'}} />
@@ -310,15 +370,57 @@ export default function StaylioCostConsoleDashboard() {
           <div>
             <div className="mb-3 text-[0.72rem] font-bold uppercase tracking-[0.16em] text-[#6dd5dc]">Staylio Cost Console</div>
             <h1 className="max-w-[920px] font-serif text-4xl leading-[1.04] tracking-tight text-white lg:text-6xl">Operational cost intelligence — live.</h1>
-            <p className="mt-4 max-w-[780px] text-[1.02rem] font-light leading-8 text-white/55">All data is live from the Cost Console API. Period filter re-fetches all panels.</p>
+            <p className="mt-4 max-w-[780px] text-[1.02rem] font-light leading-8 text-white/55">{subtitleText}</p>
           </div>
           <div className="rounded-2xl border border-white/10 bg-white/5 p-5 lg:p-6">
             <div className="mb-4 text-[0.7rem] font-semibold uppercase tracking-[0.14em] text-white/35">Period</div>
             <div className="mb-5 flex flex-wrap gap-2">
               {periods.map(p=>(
-                <button key={p} onClick={()=>setPeriod(p)} className={`rounded-md border px-3 py-1.5 text-[0.8rem] font-medium transition ${period===p?'border-[#0E6B72]/50 bg-[#0E6B72]/20 text-[#6dd5dc]':'border-white/10 bg-white/5 text-white/55 hover:text-white/85'}`}>{p}</button>
+                <button key={p} onClick={()=>handlePeriodClick(p)} className={`rounded-md border px-3 py-1.5 text-[0.8rem] font-medium transition ${period===p?'border-[#0E6B72]/50 bg-[#0E6B72]/20 text-[#6dd5dc]':'border-white/10 bg-white/5 text-white/55 hover:text-white/85'}`}>{p}</button>
               ))}
             </div>
+
+            {/* Custom date range inputs — only visible when Custom is selected */}
+            {period === 'Custom' && (
+              <div className="mb-5 space-y-3 border-t border-white/8 pt-4">
+                <div className="flex gap-2">
+                  <div className="flex-1">
+                    <div className="mb-1 text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-white/30">Start</div>
+                    <input
+                      type="date"
+                      value={customStart}
+                      onChange={e => setCustomStart(e.target.value)}
+                      className="w-full rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-[0.8rem] text-white [color-scheme:dark] focus:border-[#0E6B72]/60 focus:outline-none"
+                    />
+                  </div>
+                  <div className="flex-1">
+                    <div className="mb-1 text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-white/30">End</div>
+                    <input
+                      type="date"
+                      value={customEnd}
+                      onChange={e => setCustomEnd(e.target.value)}
+                      className="w-full rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-[0.8rem] text-white [color-scheme:dark] focus:border-[#0E6B72]/60 focus:outline-none"
+                    />
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleApply}
+                    disabled={!customStart || !customEnd}
+                    className="flex-1 rounded-md border border-[#0E6B72]/50 bg-[#0E6B72]/20 px-3 py-1.5 text-[0.8rem] font-medium text-[#6dd5dc] transition hover:bg-[#0E6B72]/30 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Apply
+                  </button>
+                  <button
+                    onClick={handleReset}
+                    className="flex-1 rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-[0.8rem] font-medium text-white/55 transition hover:text-white/85"
+                  >
+                    Reset
+                  </button>
+                </div>
+              </div>
+            )}
+
             <div className="mb-2 text-[0.7rem] font-semibold uppercase tracking-[0.14em] text-white/35">View Mode</div>
             <div className="flex flex-wrap gap-2">
               {viewModes.map(m=>(

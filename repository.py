@@ -419,27 +419,51 @@ class PostgresCostConsoleRepository:
                 ],
             }
 
-    def get_vendor_spend(self, period: str = "30d") -> list[dict[str, Any]]:
-        interval = {"24h": "24 hours", "7d": "7 days", "30d": "30 days"}.get(period, "30 days")
+    def get_vendor_spend(
+        self,
+        period: str = "30d",
+        start_date: str | None = None,
+        end_date: str | None = None,
+    ) -> list[dict[str, Any]]:
         with self._conn() as conn, conn.cursor() as cur:
-            cur.execute(
-                f"""
-                SELECT
-                    ce.vendor_id,
-                    v.vendor_name,
-                    v.category,
-                    COALESCE(SUM(ce.cost_usd), 0) as total_cost,
-                    COUNT(*) as event_count
-                FROM cost_console.cost_events ce
-                JOIN cost_console.vendors v ON v.vendor_id = ce.vendor_id
-                WHERE ce.incurred_at >= NOW() - INTERVAL '{interval}'
-                GROUP BY ce.vendor_id, v.vendor_name, v.category
-                ORDER BY total_cost DESC
-                """,
-            )
+            if start_date and end_date:
+                cur.execute(
+                    """
+                    SELECT
+                        ce.vendor_id,
+                        v.vendor_name,
+                        v.category,
+                        COALESCE(SUM(ce.cost_usd), 0) as total_cost,
+                        COUNT(*) as event_count
+                    FROM cost_console.cost_events ce
+                    JOIN cost_console.vendors v ON v.vendor_id = ce.vendor_id
+                    WHERE ce.incurred_at >= %s::date
+                      AND ce.incurred_at < %s::date + INTERVAL '1 day'
+                    GROUP BY ce.vendor_id, v.vendor_name, v.category
+                    ORDER BY total_cost DESC
+                    """,
+                    (start_date, end_date),
+                )
+            else:
+                interval = {"24h": "24 hours", "7d": "7 days", "30d": "30 days"}.get(period, "30 days")
+                cur.execute(
+                    f"""
+                    SELECT
+                        ce.vendor_id,
+                        v.vendor_name,
+                        v.category,
+                        COALESCE(SUM(ce.cost_usd), 0) as total_cost,
+                        COUNT(*) as event_count
+                    FROM cost_console.cost_events ce
+                    JOIN cost_console.vendors v ON v.vendor_id = ce.vendor_id
+                    WHERE ce.incurred_at >= NOW() - INTERVAL '{interval}'
+                    GROUP BY ce.vendor_id, v.vendor_name, v.category
+                    ORDER BY total_cost DESC
+                    """,
+                )
             return cur.fetchall()
 
-    def get_category_spend(self, period: str = "30d") -> list[dict[str, Any]]:
+    def get_category_spend(self, period: str = "30d") -> list[dict[str, Any]]:  # noqa: date range not exposed on category
         interval = {"24h": "24 hours", "7d": "7 days", "30d": "30 days"}.get(period, "30 days")
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute(
@@ -458,40 +482,84 @@ class PostgresCostConsoleRepository:
             )
             return cur.fetchall()
 
-    def get_workflow_spend(self, period: str = "30d") -> list[dict[str, Any]]:
-        interval = {"24h": "24 hours", "7d": "7 days", "30d": "30 days"}.get(period, "30 days")
+    def get_workflow_spend(
+        self,
+        period: str = "30d",
+        start_date: str | None = None,
+        end_date: str | None = None,
+    ) -> list[dict[str, Any]]:
         with self._conn() as conn, conn.cursor() as cur:
-            cur.execute(
-                f"""
-                SELECT
-                    oe.workflow_name,
-                    COALESCE(SUM(oe.estimated_cost_usd), 0) as total_cost,
-                    COUNT(*) as event_count,
-                    COUNT(DISTINCT oe.property_id) as property_count
-                FROM cost_console.operational_estimates oe
-                WHERE oe.occurred_at >= NOW() - INTERVAL '{interval}'
-                AND oe.workflow_name IS NOT NULL
-                GROUP BY oe.workflow_name
-                ORDER BY total_cost DESC
-                """,
-            )
+            if start_date and end_date:
+                cur.execute(
+                    """
+                    SELECT
+                        oe.workflow_name,
+                        COALESCE(SUM(oe.estimated_cost_usd), 0) as total_cost,
+                        COUNT(*) as event_count,
+                        COUNT(DISTINCT oe.property_id) as property_count
+                    FROM cost_console.operational_estimates oe
+                    WHERE oe.occurred_at >= %s::date
+                      AND oe.occurred_at < %s::date + INTERVAL '1 day'
+                      AND oe.workflow_name IS NOT NULL
+                    GROUP BY oe.workflow_name
+                    ORDER BY total_cost DESC
+                    """,
+                    (start_date, end_date),
+                )
+            else:
+                interval = {"24h": "24 hours", "7d": "7 days", "30d": "30 days"}.get(period, "30 days")
+                cur.execute(
+                    f"""
+                    SELECT
+                        oe.workflow_name,
+                        COALESCE(SUM(oe.estimated_cost_usd), 0) as total_cost,
+                        COUNT(*) as event_count,
+                        COUNT(DISTINCT oe.property_id) as property_count
+                    FROM cost_console.operational_estimates oe
+                    WHERE oe.occurred_at >= NOW() - INTERVAL '{interval}'
+                    AND oe.workflow_name IS NOT NULL
+                    GROUP BY oe.workflow_name
+                    ORDER BY total_cost DESC
+                    """,
+                )
             return cur.fetchall()
 
-    def get_timeseries_spend(self, period: str = "30d") -> list[dict[str, Any]]:
-        interval = {"24h": "24 hours", "7d": "7 days", "30d": "30 days"}.get(period, "30 days")
+    def get_timeseries_spend(
+        self,
+        period: str = "30d",
+        start_date: str | None = None,
+        end_date: str | None = None,
+    ) -> list[dict[str, Any]]:
         with self._conn() as conn, conn.cursor() as cur:
-            cur.execute(
-                f"""
-                SELECT
-                    date_trunc('day', ce.incurred_at)::date as date,
-                    COALESCE(SUM(ce.cost_usd), 0) as total_cost,
-                    COUNT(*) as event_count
-                FROM cost_console.cost_events ce
-                WHERE ce.incurred_at >= NOW() - INTERVAL '{interval}'
-                GROUP BY date_trunc('day', ce.incurred_at)::date
-                ORDER BY date ASC
-                """,
-            )
+            if start_date and end_date:
+                cur.execute(
+                    """
+                    SELECT
+                        date_trunc('day', ce.incurred_at)::date as date,
+                        COALESCE(SUM(ce.cost_usd), 0) as total_cost,
+                        COUNT(*) as event_count
+                    FROM cost_console.cost_events ce
+                    WHERE ce.incurred_at >= %s::date
+                      AND ce.incurred_at < %s::date + INTERVAL '1 day'
+                    GROUP BY date_trunc('day', ce.incurred_at)::date
+                    ORDER BY date ASC
+                    """,
+                    (start_date, end_date),
+                )
+            else:
+                interval = {"24h": "24 hours", "7d": "7 days", "30d": "30 days"}.get(period, "30 days")
+                cur.execute(
+                    f"""
+                    SELECT
+                        date_trunc('day', ce.incurred_at)::date as date,
+                        COALESCE(SUM(ce.cost_usd), 0) as total_cost,
+                        COUNT(*) as event_count
+                    FROM cost_console.cost_events ce
+                    WHERE ce.incurred_at >= NOW() - INTERVAL '{interval}'
+                    GROUP BY date_trunc('day', ce.incurred_at)::date
+                    ORDER BY date ASC
+                    """,
+                )
             return cur.fetchall()
 
 

@@ -20,6 +20,24 @@ from typing import Annotated, Any
 
 import uvicorn
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, UploadFile
+
+def _resolve_dates(
+    start_date: str | None,
+    end_date: str | None,
+) -> tuple[str | None, str | None]:
+    """Validate and return date strings. Both must be provided or neither."""
+    if not start_date and not end_date:
+        return None, None
+    if not start_date or not end_date:
+        raise HTTPException(status_code=400, detail="Both start_date and end_date are required when using date range")
+    try:
+        datetime.strptime(start_date, "%Y-%m-%d")
+        datetime.strptime(end_date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Dates must be in YYYY-MM-DD format")
+    if start_date > end_date:
+        raise HTTPException(status_code=400, detail="start_date must be <= end_date")
+    return start_date, end_date
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -383,12 +401,16 @@ def get_property_costs(
 def get_vendor_breakdown(
     auth: Auth,
     period: str = Query("30d", regex="^(24h|7d|30d)$"),
+    start_date: str | None = Query(None),
+    end_date: str | None = Query(None),
     repo: PostgresCostConsoleRepository = Depends(get_repo),
 ) -> dict:
+    sd, ed = _resolve_dates(start_date, end_date)
     try:
-        rows = repo.get_vendor_spend(period)
+        rows = repo.get_vendor_spend(period, start_date=sd, end_date=ed)
+        label = f"{sd} to {ed}" if sd else period
         return {
-            "period": period,
+            "period": label,
             "vendors": [
                 {
                     "vendor_id": r["vendor_id"],
@@ -401,6 +423,8 @@ def get_vendor_breakdown(
             ],
             "total": round(sum(float(r["total_cost"]) for r in rows), 4),
         }
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -432,12 +456,16 @@ def get_category_breakdown(
 def get_workflow_breakdown(
     auth: Auth,
     period: str = Query("30d", regex="^(24h|7d|30d)$"),
+    start_date: str | None = Query(None),
+    end_date: str | None = Query(None),
     repo: PostgresCostConsoleRepository = Depends(get_repo),
 ) -> dict:
+    sd, ed = _resolve_dates(start_date, end_date)
     try:
-        rows = repo.get_workflow_spend(period)
+        rows = repo.get_workflow_spend(period, start_date=sd, end_date=ed)
+        label = f"{sd} to {ed}" if sd else period
         return {
-            "period": period,
+            "period": label,
             "workflows": [
                 {
                     "workflow_name": r["workflow_name"],
@@ -449,6 +477,8 @@ def get_workflow_breakdown(
             ],
             "total": round(sum(float(r["total_cost"]) for r in rows), 4),
         }
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -456,12 +486,16 @@ def get_workflow_breakdown(
 def get_timeseries(
     auth: Auth,
     period: str = Query("30d", regex="^(24h|7d|30d)$"),
+    start_date: str | None = Query(None),
+    end_date: str | None = Query(None),
     repo: PostgresCostConsoleRepository = Depends(get_repo),
 ) -> dict:
+    sd, ed = _resolve_dates(start_date, end_date)
     try:
-        rows = repo.get_timeseries_spend(period)
+        rows = repo.get_timeseries_spend(period, start_date=sd, end_date=ed)
+        label = f"{sd} to {ed}" if sd else period
         return {
-            "period": period,
+            "period": label,
             "series": [
                 {
                     "date": r["date"].isoformat() if r["date"] else None,
@@ -472,6 +506,8 @@ def get_timeseries(
             ],
             "total": round(sum(float(r["total_cost"]) for r in rows), 4),
         }
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
