@@ -1,40 +1,20 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect } from "react";
 
+// Every number on this page comes from the Cost Console API, which reads the
+// pipeline's cost ledger (public.cost_events) read-only. Nothing here is sample data.
 const PROXY_BASE = 'https://dashboard-proxy.staylio.ai';
 
 async function apiFetch(path) {
   const res = await fetch(`${PROXY_BASE}${path}`);
-  if (!res.ok) throw new Error(`API ${path} returned ${res.status}`);
+  if (!res.ok) throw new Error(`Cost data unavailable (${res.status}) for ${path.split('?')[0]}`);
   return res.json();
 }
 
-const recentEstimateEvents = [
-  { vendor: "Anthropic", workflow: "listing_generation", detail: "claude-sonnet-4-6 · landing_page_copy", cost: 0.0529 },
-  { vendor: "Anthropic", workflow: "listing_generation", detail: "claude-haiku-4-5 · social_captions", cost: 0.0215 },
-  { vendor: "Creatomate", workflow: "video_generation", detail: "video_render · vibe_match_16_9", cost: 0.1 },
-  { vendor: "Creatomate", workflow: "video_generation", detail: "video_render · vibe_match_9_16", cost: 0.1 },
-  { vendor: "ElevenLabs", workflow: "video_generation", detail: "tts · guest_review_1", cost: 0.1181 },
-];
+const periods = [["24h","24h"],["7d","7d"],["30d","30d"],["MTD","mtd"],["90d","90d"],["All","all"],["Custom","custom"]];
+const STICKY_BG = "bg-[#111e35]";
 
-const propertyRows = [
-  { property_id: "vista-azule", name: "Vista Azule", subdomain: "vista-azule.staylio.ai", total_cost: 0, listing_generation: 0, video_generation: 0, event_count: 0, status: "Active" },
-  { property_id: "placeholder", name: "Pending Property", subdomain: "pending.staylio.ai", total_cost: 0, listing_generation: 0, video_generation: 0, event_count: 0, status: "Queued" },
-];
-
-const periods = ["24h", "7d", "30d", "MTD", "Custom"];
-const viewModes = ["Combined", "Actual", "Estimated"];
-
-function money(v) { return `$${(v ?? 0).toFixed(2)}`; }
-function shortMoney(v) { if (v >= 1000) return `$${(v/1000).toFixed(1).replace(/\.0$/,'')}k`; return money(v); }
-function apiPeriod(p) { return p === "MTD" ? "30d" : p; }
-
-function buildActualSeries(t) { return (t?.series ?? []).map(d => ({ label: d.date.slice(5), value: d.cost_usd })); }
-function buildEstimatedSeries(total) {
-  return [0.08,0.14,0.11,0.18,0.1,0.16,0.09,0.22,0.12,0.27,0.19,total].map((v,i) => ({ label: `${i+2}`.padStart(2,'0'), value: v }));
-}
-function mergeSeries(actual, estimated) {
-  return actual.map((p,i) => ({ label: p.label, actual: p.value, estimated: estimated[i]?.value ?? 0, combined: p.value + (estimated[i]?.value ?? 0) }));
-}
+function money(v) { return v == null ? '—' : `$${Number(v).toFixed(2)}`; }
+function et(iso) { return iso ? new Date(iso).toLocaleString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) + ' ET' : '—'; }
 
 function MetricCard({ label, value, sub, accent="white" }) {
   const c = accent==="teal"?"text-[#6dd5dc]":accent==="green"?"text-[#4caf7d]":"text-white";
@@ -58,192 +38,90 @@ function SectionHeader({ eyebrow, title, body }) {
   );
 }
 
-function ChartPanel({ rows, mode }) {
-  const max = Math.max(...rows.map(r=>r.combined), 1);
+
+function Panel({ eyebrow, title, body, children, flush }) {
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/5 p-6 lg:p-8">
-      <SectionHeader eyebrow="Spend Over Time" title="Actual, estimated, and blended cost curves" />
-      <div className="h-[300px] rounded-xl border border-white/8 bg-white/[0.03] p-5">
-        <div className="flex h-full items-end gap-3">
-          {rows.map(r => {
-            const ah = (r.actual/max)*180, eh = (r.estimated/max)*180, ch = (r.combined/max)*180;
-            return (
-              <div key={r.label} className="flex flex-1 flex-col items-center justify-end gap-3">
-                <div className="flex h-[210px] w-full items-end justify-center gap-1">
-                  {(mode==="Combined"||mode==="Actual") && <div className="w-1/2 rounded-t-md bg-gradient-to-t from-[#0E6B72] to-[#6dd5dc]" style={{height:`${Math.max(ah,4)}px`,opacity:mode==="Actual"?1:0.75}} />}
-                  {(mode==="Combined"||mode==="Estimated") && <div className="w-1/2 rounded-t-md bg-gradient-to-t from-[#1A6B3A] to-[#4caf7d]" style={{height:`${Math.max(mode==="Combined"?eh:ch,4)}px`,opacity:mode==="Estimated"?1:0.88}} />}
-                </div>
-                <div className="text-[0.68rem] text-white/30">{r.label}</div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-      <div className="mt-5 grid gap-4 md:grid-cols-3">
-        {[["Actual synced cost",shortMoney(rows.reduce((s,r)=>s+r.actual,0)),"teal"],["Estimated workflow cost",shortMoney(rows.reduce((s,r)=>s+r.estimated,0)),"green"],["Combined operating cost",shortMoney(rows.reduce((s,r)=>s+r.combined,0)),"white"]].map(([l,v,t])=>(
-          <div key={l} className="rounded-xl border border-white/8 bg-white/[0.03] p-4">
-            <div className="mb-2 text-[0.68rem] uppercase tracking-[0.14em] text-white/30">{l}</div>
-            <div className={`font-serif text-2xl ${t==="teal"?"text-[#6dd5dc]":t==="green"?"text-[#4caf7d]":"text-white"}`}>{v}</div>
-          </div>
-        ))}
-      </div>
+    <div className={`rounded-2xl border border-white/10 bg-white/5 ${flush ? 'overflow-hidden' : 'p-6 lg:p-8'}`}>
+      <div className={flush ? 'px-6 pt-6 pb-4 lg:px-8 lg:pt-8' : ''}><SectionHeader eyebrow={eyebrow} title={title} body={body} /></div>
+      {children}
     </div>
   );
 }
 
-function WorkflowPanel({ rows }) {
-  const max = Math.max(...(rows??[]).map(r=>r.cost_usd), 0.001);
+function Table({ cols, rows, render, onRow, selectedKey, rowKey }) {
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/5 p-6 lg:p-8">
-      <SectionHeader eyebrow="Workflow Economics" title="Cost by canonical workflow" />
-      <div className="space-y-5">
-        {(rows??[]).map(wf=>(
-          <div key={wf.workflow_name}>
-            <div className="mb-2 flex items-end justify-between gap-4">
-              <div>
-                <div className="text-[0.98rem] font-medium text-white">{wf.workflow_name}</div>
-                <div className="mt-1 text-xs text-white/35">{wf.event_count} events · {wf.property_count} properties</div>
-              </div>
-              <div className="font-serif text-2xl text-white">{money(wf.cost_usd)}</div>
-            </div>
-            <div className="h-2 rounded-full bg-white/8 overflow-hidden">
-              <div className="h-full rounded-full bg-gradient-to-r from-[#0E6B72] to-[#6dd5dc]" style={{width:`${Math.max((wf.cost_usd/max)*100,wf.cost_usd===0?2:6)}%`,opacity:wf.cost_usd===0?0.22:1}} />
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// Sticky bg colour — approximation of page bg (#111e35) so content doesn't bleed through
-const STICKY_BG = "bg-[#111e35]";
-
-function VendorTable({ rows }) {
-  const cols = ['Vendor','Category','Status','Cost Type','Period Spend','Events'];
-  return (
-    <div className="rounded-2xl border border-white/10 bg-white/5 overflow-hidden">
-      <div className="px-6 pt-6 pb-4 lg:px-8 lg:pt-8">
-        <SectionHeader eyebrow="Vendor Intelligence" title="Usage-based, amortized, active, and inactive vendors" />
-      </div>
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[820px] border-collapse">
-          <thead>
-            <tr className="border-y border-white/8 bg-white/[0.02]">
-              {cols.map((h,i)=>(
-                <th
-                  key={h}
-                  className={`px-6 py-4 text-left text-[0.68rem] font-bold uppercase tracking-[0.14em] text-white/30 ${i===0?`sticky left-0 z-10 ${STICKY_BG}`:''}`}
-                >
-                  {h}
-                </th>
-              ))}
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[720px] border-collapse">
+        <thead><tr className="border-y border-white/8 bg-white/[0.02]">
+          {cols.map((h, i) => <th key={h} className={`px-6 py-4 text-left text-[0.68rem] font-bold uppercase tracking-[0.14em] text-white/30 ${i === 0 ? `sticky left-0 z-10 ${STICKY_BG}` : ''}`}>{h}</th>)}
+        </tr></thead>
+        <tbody>
+          {rows.length === 0 && <tr><td colSpan={cols.length} className="px-6 py-6 text-sm text-white/40">Nothing recorded in this period.</td></tr>}
+          {rows.map(r => (
+            <tr key={rowKey(r)} onClick={onRow ? () => onRow(r) : undefined}
+                className={`border-b border-white/6 transition hover:bg-white/[0.02] ${onRow ? 'cursor-pointer' : ''} ${selectedKey === rowKey(r) ? 'bg-white/[0.04]' : ''}`}>
+              {render(r).map((cell, i) => <td key={i} className={`px-6 py-4 text-sm text-white/75 ${i === 0 ? `sticky left-0 z-10 ${STICKY_BG} font-medium text-white` : ''}`}>{cell}</td>)}
             </tr>
-          </thead>
-          <tbody>
-            {(rows??[]).map(v=>{
-              const status=v.inactive?'Inactive':'Active';
-              const type=v.vendor_id==='late'?'amortized':v.inactive?'inactive':'usage-based';
-              return (
-                <tr key={v.vendor_id} className="border-b border-white/6 hover:bg-white/[0.02] transition">
-                  <td className={`px-6 py-4 font-medium sticky left-0 z-10 ${STICKY_BG} max-w-[160px]`}>
-                    <span className="block truncate text-white" title={v.vendor_name}>{v.vendor_name}</span>
-                  </td>
-                  <td className="px-6 py-4 text-sm text-white/65 max-w-[120px]">
-                    <span className="block truncate" title={v.category}>{v.category}</span>
-                  </td>
-                  <td className="px-6 py-4">
-                    <span className={`inline-flex rounded-full border px-2.5 py-1 text-[0.7rem] font-semibold ${status==='Active'?'border-[#0E6B72]/40 bg-[#0E6B72]/20 text-[#6dd5dc]':'border-white/10 bg-white/6 text-white/45'}`}>{status}</span>
-                  </td>
-                  <td className="px-6 py-4 text-sm text-white/65">{type}</td>
-                  <td className="px-6 py-4 font-serif text-xl text-white">{v.vendor_id==='late'?'$19.00/mo':money(v.cost_usd)}</td>
-                  <td className="px-6 py-4 text-sm text-white/65">{v.event_count}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
 
-function PropertyPanel({ rows, selected, onSelect }) {
-  const current = rows.find(r=>r.property_id===selected)??rows[0];
-  const cols = ['Property','Total Cost','Listing','Video','Events','Status'];
+function Bars({ rows, label, value, sub }) {
+  const max = Math.max(...rows.map(value), 0.001);
   return (
-    <div className="grid gap-6 xl:grid-cols-[1fr_.95fr]">
-      <div className="rounded-2xl border border-white/10 bg-white/5 overflow-hidden">
-        <div className="px-6 pt-6 pb-4 lg:px-8 lg:pt-8">
-          <SectionHeader eyebrow="Property Cost Profile" title="Property-level operating cost" />
+    <div className="space-y-5">
+      {rows.length === 0 && <div className="text-sm text-white/40">Nothing recorded in this period.</div>}
+      {rows.map(r => (
+        <div key={label(r)}>
+          <div className="mb-2 flex items-end justify-between gap-4">
+            <div><div className="text-[0.98rem] font-medium text-white">{label(r)}</div><div className="mt-1 text-xs text-white/35">{sub(r)}</div></div>
+            <div className="font-serif text-2xl text-white">{money(value(r))}</div>
+          </div>
+          <div className="h-2 overflow-hidden rounded-full bg-white/8"><div className="h-full rounded-full bg-gradient-to-r from-[#0E6B72] to-[#6dd5dc]" style={{ width: `${Math.max((value(r) / max) * 100, 2)}%` }} /></div>
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[760px] border-collapse">
-            <thead>
-              <tr className="border-y border-white/8 bg-white/[0.02]">
-                {cols.map((h,i)=>(
-                  <th
-                    key={h}
-                    className={`px-6 py-4 text-left text-[0.68rem] font-bold uppercase tracking-[0.14em] text-white/30 ${i===0?`sticky left-0 z-10 ${STICKY_BG}`:''}`}
-                  >
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map(p=>(
-                <tr key={p.property_id} className={`border-b border-white/6 transition hover:bg-white/[0.02] cursor-pointer ${selected===p.property_id?'bg-white/[0.03]':''}`} onClick={()=>onSelect(p.property_id)}>
-                  <td className={`px-6 py-4 sticky left-0 z-10 ${STICKY_BG} max-w-[180px]`}>
-                    <div className="font-medium text-white truncate" title={p.name}>{p.name}</div>
-                    <div className="mt-1 text-xs text-white/30 truncate" title={p.subdomain}>{p.subdomain}</div>
-                  </td>
-                  <td className="px-6 py-4 font-serif text-xl text-[#6dd5dc]">{money(p.total_cost)}</td>
-                  <td className="px-6 py-4 text-white/75">{money(p.listing_generation)}</td>
-                  <td className="px-6 py-4 text-white/75">{money(p.video_generation)}</td>
-                  <td className="px-6 py-4 text-sm text-white/65">{p.event_count}</td>
-                  <td className="px-6 py-4 text-sm text-white/65">{p.status}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-      <div className="rounded-2xl border border-white/10 bg-white/5 p-6 lg:p-8">
-        <SectionHeader eyebrow="Selected Property" title={current?.name??'—'} />
-        <div className="space-y-4">
-          {[['Total cost this run',money(current?.total_cost),'teal'],['Listing generation',money(current?.listing_generation),'white'],['Video generation',money(current?.video_generation),'white'],['Tracked events',String(current?.event_count??0),'white']].map(([l,v,t])=>(
-            <div key={l} className="rounded-xl border border-white/8 bg-white/[0.03] p-4">
-              <div className="mb-2 text-[0.68rem] uppercase tracking-[0.14em] text-white/30">{l}</div>
-              <div className={`font-serif text-2xl ${t==='teal'?'text-[#6dd5dc]':'text-white'}`}>{v}</div>
+      ))}
+    </div>
+  );
+}
+
+function SpendChart({ series }) {
+  const max = Math.max(...series.map(d => d.cost_usd), 0.001);
+  return (
+    <div className="h-[260px] rounded-xl border border-white/8 bg-white/[0.03] p-5">
+      {series.length === 0 ? <div className="text-sm text-white/40">Nothing recorded in this period.</div> : (
+        <div className="flex h-full items-end gap-2">
+          {series.map(d => (
+            <div key={d.date} className="flex flex-1 flex-col items-center justify-end gap-2" title={`${d.date}: ${money(d.cost_usd)} · ${d.event_count} charges`}>
+              <div className="w-full rounded-t-md bg-gradient-to-t from-[#0E6B72] to-[#6dd5dc]" style={{ height: `${Math.max((d.cost_usd / max) * 190, 3)}px` }} />
+              <div className="text-[0.62rem] text-white/30">{d.date.slice(5)}</div>
             </div>
           ))}
         </div>
-      </div>
+      )}
     </div>
   );
 }
 
-function EventPanel({ rows }) {
+function VendorList({ vendors }) {
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/5 p-6 lg:p-8">
-      <SectionHeader eyebrow="Recent Emitted Events" title="Estimated workflow activity" />
-      <div className="space-y-4">
-        {rows.map((e,i)=>(
-          <div key={i} className="rounded-xl border border-white/8 bg-white/[0.03] p-4">
-            <div className="mb-2 flex items-start justify-between gap-4">
-              <div>
-                <div className="font-medium text-white">{e.vendor}</div>
-                <div className="mt-1 text-xs uppercase tracking-[0.12em] text-[#6dd5dc]">{e.workflow}</div>
-              </div>
-              <div className="font-serif text-xl text-white">{money(e.cost)}</div>
-            </div>
-            <div className="text-sm text-white/55">{e.detail}</div>
-          </div>
-        ))}
-      </div>
+    <div className="space-y-2">
+      {(vendors ?? []).map(v => (
+        <div key={v.vendor_id} className="flex justify-between gap-4 border-b border-white/6 pb-2 text-sm last:border-0">
+          <span className="text-white/80">{v.vendor_name}{v.units != null && v.unit_name ? <span className="text-white/35"> · {Number(v.units).toLocaleString()} {v.unit_name}</span> : null}</span>
+          <span className="font-serif text-white">{money(v.cost_usd ?? v.total_cost)}</span>
+        </div>
+      ))}
     </div>
   );
+}
+
+function LinkBadge({ b }) {
+  return b.linked
+    ? <span className="inline-flex rounded-full border border-[#0E6B72]/40 bg-[#0E6B72]/20 px-2.5 py-1 text-[0.7rem] font-semibold text-[#6dd5dc]">Complete total</span>
+    : <span className="inline-flex rounded-full border border-amber-400/30 bg-amber-400/10 px-2.5 py-1 text-[0.7rem] font-semibold text-amber-300" title="Ran before the pipeline linked build steps (Oct 11, 2026): only the build's own charges are attached.">Partial — before build linking</span>;
 }
 
 function LoadingState() {
@@ -271,209 +149,125 @@ function ErrorState({ message }) {
 
 export default function StaylioCostConsoleDashboard() {
   const [period, setPeriod] = useState('30d');
-  const [mode, setMode] = useState('Combined');
-  const [selectedProperty, setSelectedProperty] = useState('vista-azule');
-
-  // Custom date range state
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
-  const [appliedCustom, setAppliedCustom] = useState(null); // { start, end } when active
-
-  const [summary, setSummary] = useState(null);
-  const [vendors, setVendors] = useState(null);
-  const [workflows, setWorkflows] = useState(null);
-  const [timeseries, setTimeseries] = useState(null);
+  const [applied, setApplied] = useState(null);
+  const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [build, setBuild] = useState(null);
+  const [property, setProperty] = useState(null);
+  const [propertyDetail, setPropertyDetail] = useState(null);
+
+  const params = applied ? `start_date=${applied.start}&end_date=${applied.end}` : `period=${period}`;
 
   useEffect(() => {
-    // If Custom selected but not yet applied, hold — wait for Apply
-    if (period === 'Custom' && !appliedCustom) return;
-
-    setLoading(true);
-    setError(null);
-
-    const params = appliedCustom
-      ? `start_date=${appliedCustom.start}&end_date=${appliedCustom.end}`
-      : `period=${apiPeriod(period)}`;
-
+    if (period === 'custom' && !applied) return;
+    setLoading(true); setError(null); setBuild(null); setProperty(null); setPropertyDetail(null);
     Promise.all([
       apiFetch('/metrics/summary'),
       apiFetch(`/metrics/vendors?${params}`),
       apiFetch(`/metrics/workflows?${params}`),
       apiFetch(`/metrics/timeseries?${params}`),
-    ]).then(([s,v,w,t]) => {
-      setSummary(s); setVendors(v); setWorkflows(w); setTimeseries(t);
-      setLoading(false);
-    }).catch(err => { setError(err.message); setLoading(false); });
-  }, [period, appliedCustom]);
+      apiFetch(`/metrics/builds?${params}`),
+      apiFetch('/metrics/builds/averages?period=90d'),
+      apiFetch(`/metrics/properties?${params}`),
+    ]).then(([summary, vendors, purposes, series, builds, averages, properties]) => {
+      setData({ summary, vendors, purposes, series, builds, averages, properties }); setLoading(false);
+    }).catch(e => { setError(e.message); setLoading(false); });
+  }, [period, applied]);
 
-  const todaySpend = summary?.today_spend ?? 0;
-  const mtdSpend = summary?.mtd_spend ?? 0;
-  const failedSyncs = summary?.failed_syncs_today ?? 0;
-  const actualToday = (summary?.today_by_vendor ?? []).reduce((s,v)=>s+v.cost_usd, 0);
-  const estimatedTotal = workflows?.total ?? 0;
-  const activeVendorCount = (vendors?.vendors ?? []).filter(v=>!v.inactive).length;
-  const eventTotal = (workflows?.workflows ?? []).reduce((s,w)=>s+w.event_count, 0);
+  useEffect(() => {
+    if (!property) return;
+    setPropertyDetail(null);
+    apiFetch(`/metrics/property/${property}?${params}`).then(setPropertyDetail).catch(e => setPropertyDetail({ error: e.message }));
+  }, [property]);
 
-  const kpis = [
-    { label:'Spend Today', value:money(todaySpend), sub:'actual + estimated operating view', accent:'teal' },
-    { label:'MTD Spend', value:money(mtdSpend), sub:'tracked across all sources', accent:'white' },
-    { label:'Actual Synced Cost', value:money(actualToday), sub:'vendor-synced spend', accent:'teal' },
-    { label:'Estimated Workflow Cost', value:money(estimatedTotal), sub:'pipeline-emitted estimates', accent:'green' },
-    { label:'Active Vendors', value:String(activeVendorCount), sub:'usage + amortized', accent:'white' },
-    { label:'Workflow Events', value:String(eventTotal), sub:'today across active workflows', accent:'green' },
-  ];
-
-  const chartRows = useMemo(() => {
-    if (!timeseries) return [];
-    return mergeSeries(buildActualSeries(timeseries), buildEstimatedSeries(estimatedTotal));
-  }, [timeseries, estimatedTotal]);
-
-  function handlePeriodClick(p) {
-    setPeriod(p);
-    if (p !== 'Custom') {
-      // Switching away from custom — clear applied range so quick filter takes effect
-      setAppliedCustom(null);
-    }
-  }
-
-  function handleApply() {
-    if (customStart && customEnd) {
-      setAppliedCustom({ start: customStart, end: customEnd });
-    }
-  }
-
-  function handleReset() {
-    setPeriod('30d');
-    setAppliedCustom(null);
-    setCustomStart('');
-    setCustomEnd('');
-  }
-
-  const subtitleText = appliedCustom
-    ? `Custom range: ${appliedCustom.start} → ${appliedCustom.end}`
-    : 'All data is live from the Cost Console API. Period filter re-fetches all panels.';
+  const d = data;
+  const builds = d?.builds?.builds ?? [];
+  const avg = d?.averages;
+  const kpis = d ? [
+    { label: 'Spend today', value: money(d.summary.today_spend), sub: 'Eastern time, all vendors', accent: 'teal' },
+    { label: 'Month to date', value: money(d.summary.mtd_spend), sub: 'from the pipeline cost ledger', accent: 'white' },
+    { label: 'Spend this period', value: money(d.vendors.total), sub: d.vendors.period, accent: 'white' },
+    { label: 'Builds this period', value: String(builds.length), sub: `${builds.filter(b => b.status === 'complete').length} completed · ${builds.filter(b => b.linked).length} with complete totals`, accent: 'green' },
+    { label: 'Cost per completed build', value: avg?.completed_linked_builds ? money(avg.cost_per_build) : 'Waiting', sub: avg?.completed_linked_builds ? `average of ${avg.completed_linked_builds} linked builds, last 90 days` : 'no completed build with linked steps yet', accent: 'teal' },
+    { label: 'Properties with spend', value: String((d.properties.properties ?? []).length), sub: d.properties.period, accent: 'white' },
+  ] : [];
 
   return (
-    <div className="min-h-screen overflow-hidden bg-[#111e35] text-white relative">
-      <div className="pointer-events-none absolute inset-0 opacity-[0.04]" style={{backgroundImage:'linear-gradient(rgba(110,213,220,0.5) 1px, transparent 1px), linear-gradient(90deg, rgba(110,213,220,0.5) 1px, transparent 1px)',backgroundSize:'60px 60px'}} />
+    <div className="relative min-h-screen overflow-hidden bg-[#111e35] text-white">
       <nav className="sticky top-0 z-20 flex h-16 items-center justify-between border-b border-white/10 bg-[#1B2A4A]/95 px-6 backdrop-blur lg:px-10">
         <div className="font-serif text-[1.4rem] font-bold tracking-tight">Staylio<span className="text-[#6dd5dc]">.ai</span></div>
-        <div className="hidden items-center gap-5 md:flex">
-          <span className="text-[0.72rem] font-semibold uppercase tracking-[0.14em] text-white/35">Cost Console</span>
-          <span className="text-sm text-white/45">Operational Cost Intelligence</span>
-        </div>
+        <span className="text-[0.72rem] font-semibold uppercase tracking-[0.14em] text-white/35">Cost Console</span>
       </nav>
       <main className="relative z-10 mx-auto max-w-[1280px] px-6 py-10 lg:px-10 lg:py-12">
         <div className="mb-10 grid gap-8 lg:grid-cols-[1.15fr_.85fr] lg:items-end">
           <div>
             <div className="mb-3 text-[0.72rem] font-bold uppercase tracking-[0.16em] text-[#6dd5dc]">Staylio Cost Console</div>
-            <h1 className="max-w-[920px] font-serif text-4xl leading-[1.04] tracking-tight text-white lg:text-6xl">Operational cost intelligence — live.</h1>
-            <p className="mt-4 max-w-[780px] text-[1.02rem] font-light leading-8 text-white/55">{subtitleText}</p>
+            <h1 className="font-serif text-4xl leading-[1.04] tracking-tight lg:text-5xl">What every build and property costs.</h1>
+            <p className="mt-4 max-w-[780px] text-[1.02rem] font-light leading-8 text-white/55">Every figure comes from the pipeline's cost ledger, one row per vendor charge. Times are Eastern.</p>
           </div>
           <div className="rounded-2xl border border-white/10 bg-white/5 p-5 lg:p-6">
             <div className="mb-4 text-[0.7rem] font-semibold uppercase tracking-[0.14em] text-white/35">Period</div>
-            <div className="mb-5 flex flex-wrap gap-2">
-              {periods.map(p=>(
-                <button key={p} onClick={()=>handlePeriodClick(p)} className={`rounded-md border px-3 py-1.5 text-[0.8rem] font-medium transition ${period===p?'border-[#0E6B72]/50 bg-[#0E6B72]/20 text-[#6dd5dc]':'border-white/10 bg-white/5 text-white/55 hover:text-white/85'}`}>{p}</button>
+            <div className="flex flex-wrap gap-2">
+              {periods.map(([label, key]) => (
+                <button key={key} onClick={() => { setPeriod(key); if (key !== 'custom') setApplied(null); }}
+                        className={`rounded-md border px-3 py-1.5 text-[0.8rem] font-medium transition ${period === key ? 'border-[#0E6B72]/50 bg-[#0E6B72]/20 text-[#6dd5dc]' : 'border-white/10 bg-white/5 text-white/55 hover:text-white/85'}`}>{label}</button>
               ))}
             </div>
-
-            {/* Custom date range inputs — only visible when Custom is selected */}
-            {period === 'Custom' && (
-              <div className="mb-5 space-y-3 border-t border-white/8 pt-4">
-                <div className="flex gap-2">
-                  <div className="flex-1">
-                    <div className="mb-1 text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-white/30">Start</div>
-                    <input
-                      type="date"
-                      value={customStart}
-                      onChange={e => setCustomStart(e.target.value)}
-                      className="w-full rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-[0.8rem] text-white [color-scheme:dark] focus:border-[#0E6B72]/60 focus:outline-none"
-                    />
-                  </div>
-                  <div className="flex-1">
-                    <div className="mb-1 text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-white/30">End</div>
-                    <input
-                      type="date"
-                      value={customEnd}
-                      onChange={e => setCustomEnd(e.target.value)}
-                      className="w-full rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-[0.8rem] text-white [color-scheme:dark] focus:border-[#0E6B72]/60 focus:outline-none"
-                    />
-                  </div>
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    onClick={handleApply}
-                    disabled={!customStart || !customEnd}
-                    className="flex-1 rounded-md border border-[#0E6B72]/50 bg-[#0E6B72]/20 px-3 py-1.5 text-[0.8rem] font-medium text-[#6dd5dc] transition hover:bg-[#0E6B72]/30 disabled:cursor-not-allowed disabled:opacity-40"
-                  >
-                    Apply
-                  </button>
-                  <button
-                    onClick={handleReset}
-                    className="flex-1 rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-[0.8rem] font-medium text-white/55 transition hover:text-white/85"
-                  >
-                    Reset
-                  </button>
-                </div>
+            {period === 'custom' && (
+              <div className="mt-4 flex flex-wrap items-end gap-2 border-t border-white/8 pt-4">
+                <input type="date" value={customStart} onChange={e => setCustomStart(e.target.value)} className="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-[0.8rem] [color-scheme:dark]" />
+                <input type="date" value={customEnd} onChange={e => setCustomEnd(e.target.value)} className="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-[0.8rem] [color-scheme:dark]" />
+                <button disabled={!customStart || !customEnd} onClick={() => setApplied({ start: customStart, end: customEnd })} className="rounded-md border border-[#0E6B72]/50 bg-[#0E6B72]/20 px-3 py-1.5 text-[0.8rem] text-[#6dd5dc] disabled:opacity-40">Apply</button>
               </div>
             )}
-
-            <div className="mb-2 text-[0.7rem] font-semibold uppercase tracking-[0.14em] text-white/35">View Mode</div>
-            <div className="flex flex-wrap gap-2">
-              {viewModes.map(m=>(
-                <button key={m} onClick={()=>setMode(m)} className={`rounded-md border px-3 py-1.5 text-[0.8rem] font-medium transition ${mode===m?'border-[#0E6B72]/50 bg-[#0E6B72]/20 text-[#6dd5dc]':'border-white/10 bg-white/5 text-white/55 hover:text-white/85'}`}>{m}</button>
-              ))}
-            </div>
           </div>
         </div>
 
         {loading ? <LoadingState /> : error ? <ErrorState message={error} /> : (
           <>
-            <section className="mb-10 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-              {kpis.map(card=><MetricCard key={card.label} {...card} />)}
-            </section>
+            <section className="mb-10 grid gap-4 md:grid-cols-2 xl:grid-cols-3">{kpis.map(k => <MetricCard key={k.label} {...k} />)}</section>
+
             <section className="mb-10 grid gap-6 xl:grid-cols-[1.05fr_.95fr]">
-              <WorkflowPanel rows={workflows?.workflows??[]} />
-              <ChartPanel rows={chartRows} mode={mode} />
+              <Panel eyebrow="Spend over time" title="Daily spend (Eastern)"><SpendChart series={d.series.series ?? []} /></Panel>
+              <Panel eyebrow="Why money was spent" title="Spend by purpose">
+                <Bars rows={d.purposes.workflows ?? []} label={r => r.workflow_name} value={r => r.cost_usd} sub={r => `${r.event_count} charges · ${r.property_count} properties`} />
+              </Panel>
             </section>
-            <section className="mb-10 grid gap-6 xl:grid-cols-[1fr_.95fr]">
-              <VendorTable rows={vendors?.vendors??[]} />
-              <EventPanel rows={recentEstimateEvents} />
+
+            <section className="mb-10 grid gap-6 xl:grid-cols-[1.2fr_.8fr]">
+              <Panel flush eyebrow="Builds" title="Cost of each property build" body="A build's cost is its own charges plus every linked step's. Builds that ran before Oct 11, 2026 show only their own charges and are marked partial.">
+                <Table cols={['Started', 'Property', 'Status', 'Total', 'Totals']} rows={builds} rowKey={b => b.run_id} selectedKey={build?.run_id} onRow={setBuild}
+                       render={b => [et(b.started_at), b.property_name ?? '—', b.status, <span className="font-serif text-lg text-[#6dd5dc]">{money(b.total_cost)}</span>, <LinkBadge b={b} />]} />
+              </Panel>
+              <Panel eyebrow={build ? 'Selected build' : 'Average per completed build'} title={build ? `${build.property_name ?? 'Build'} · ${money(build.total_cost)}` : (avg?.completed_linked_builds ? `${money(avg.cost_per_build)} over ${avg.completed_linked_builds} builds` : 'Waiting for a linked build')}
+                     body={build ? `${et(build.started_at)} · ${build.status} · ${build.linked_steps} linked steps · run ${build.run_id}` : 'Click a build to see its vendor breakdown.'}>
+                <VendorList vendors={build ? build.vendors : (avg?.vendors ?? []).map(v => ({ vendor_id: v.vendor_id, vendor_name: `${v.vendor_name} (in ${v.builds_using} of ${avg.completed_linked_builds})`, cost_usd: v.cost_per_build }))} />
+              </Panel>
             </section>
+
+            <section className="mb-10 grid gap-6 xl:grid-cols-[1.2fr_.8fr]">
+              <Panel flush eyebrow="Properties" title="Cost by property">
+                <Table cols={['Property', 'Spend this period', 'Charges', 'Builds (all time)', 'Last activity']} rows={d.properties.properties ?? []} rowKey={p => p.property_id ?? 'none'} selectedKey={property}
+                       onRow={p => p.property_id && setProperty(p.property_id)}
+                       render={p => [p.property_name, <span className="font-serif text-lg text-[#6dd5dc]">{money(p.total_cost)}</span>, p.event_count, p.builds_all_time, et(p.last_activity)]} />
+              </Panel>
+              <Panel eyebrow="Selected property" title={propertyDetail?.property_name ?? (property ? 'Loading…' : 'Click a property')} body={propertyDetail && !propertyDetail.error ? `${money(propertyDetail.total_cost)} · ${propertyDetail.builds.length} builds · ${propertyDetail.period}` : propertyDetail?.error}>
+                {propertyDetail && !propertyDetail.error && <VendorList vendors={propertyDetail.by_vendor} />}
+              </Panel>
+            </section>
+
             <section className="mb-10">
-              <PropertyPanel rows={propertyRows} selected={selectedProperty} onSelect={setSelectedProperty} />
-            </section>
-            <section className="grid gap-6 xl:grid-cols-[1fr_.95fr]">
-              <div className="rounded-2xl border border-white/10 bg-white/5 p-6 lg:p-8">
-                <SectionHeader eyebrow="Wiring Status" title="What is live vs. static" />
-                <div className="space-y-3 text-sm leading-7 text-white/60">
-                  <div><strong className="text-white">Summary, workflows, vendors, timeseries:</strong> live from Cost Console API</div>
-                  <div><strong className="text-white">Property panel:</strong> static — no property endpoint yet</div>
-                  <div><strong className="text-white">Recent events:</strong> static — no operational_estimates endpoint yet</div>
-                </div>
-              </div>
-              <div className="rounded-2xl border border-white/10 bg-white/5 p-6 lg:p-8">
-                <SectionHeader eyebrow="System Health" title="Integrity and status" />
-                <div className="space-y-4">
-                  {[['Failed syncs today',String(failedSyncs)],['Anthropic connector','Verified'],['Pipeline emitter','Deterministic and idempotent'],['Inactive vendor handling','Ayrshare inactive · Late active'],['Authentication','Cloudflare Zero Trust · OTP']].map(([l,v])=>(
-                    <div key={l} className="flex items-start justify-between gap-4 border-b border-white/6 pb-3 last:border-0 last:pb-0">
-                      <div className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-white/30">{l}</div>
-                      <div className="text-right text-sm text-white/75">{v}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
+              <Panel flush eyebrow="Vendors" title="Spend by vendor this period">
+                <Table cols={['Vendor', 'Category', 'Spend', 'Charges']} rows={d.vendors.vendors ?? []} rowKey={v => v.vendor_id}
+                       render={v => [v.vendor_name, v.category, <span className="font-serif text-lg">{money(v.cost_usd)}</span>, v.event_count]} />
+              </Panel>
             </section>
           </>
         )}
-
-        <footer className="mt-14 flex flex-col gap-3 border-t border-white/8 pt-6 text-[0.78rem] text-white/30 md:flex-row md:items-center md:justify-between">
-          <div><span className="mr-2 inline-block h-1.5 w-1.5 rounded-full bg-[#4caf7d] align-middle" />Live · wired to Cost Console API</div>
-          <div>console.staylio.ai · protected by Cloudflare Zero Trust</div>
-        </footer>
+        <footer className="mt-14 border-t border-white/8 pt-6 text-[0.78rem] text-white/30">Source: pipeline cost ledger (public.cost_events), read-only · Eastern time</footer>
       </main>
     </div>
   );

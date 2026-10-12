@@ -339,177 +339,131 @@ def create_estimate(
     return {"status": "ok", "estimate_id": eid, "estimated_cost_usd": payload.estimated_cost_usd}
 
 
-# --- Dashboard ---
+# --- Reporting (read-only, from the pipeline's cost ledger public.cost_events) ---
+#
+# Every endpoint below reads through reporting.ReportingRepository: read-only
+# connection, parameterised SQL, Eastern-time days. Errors are logged server-side
+# and answered with a plain message, never connection details.
 
-@app.get("/metrics/summary", response_model=SummaryResponse)
-def get_summary(
-    auth: Auth,
-    repo: PostgresCostConsoleRepository = Depends(get_repo),
-) -> SummaryResponse:
+import logging as _logging
+from reporting import PERIOD_CHOICES, ReportingRepository
+
+_log = _logging.getLogger("cost_console.reporting")
+
+
+def get_reporting() -> ReportingRepository:
+    dsn = os.environ.get("COST_CONSOLE_DSN")
+    if not dsn:
+        raise HTTPException(status_code=503, detail="Cost data unavailable: database not configured.")
+    return ReportingRepository(dsn)
+
+
+Reporting = Annotated[ReportingRepository, Depends(get_reporting)]
+
+
+def _report(name: str, fn):
     try:
-        data = repo.get_summary_metrics()
-        return SummaryResponse(**data)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        return fn()
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("reporting %s failed", name)
+        raise HTTPException(status_code=500, detail="Cost data unavailable. See Cost Console server logs.")
+
+
+def _label(period: str, sd: str | None, ed: str | None) -> str:
+    return f"{sd} to {ed}" if sd else period
+
+
+@app.get("/metrics/summary")
+def get_summary(auth: Auth, rep: Reporting) -> dict:
+    return _report("summary", rep.summary)
+
+
+@app.get("/metrics/vendors")
+def get_vendor_breakdown(auth: Auth, rep: Reporting, period: str = Query("30d", pattern=PERIOD_CHOICES),
+                         start_date: str | None = Query(None), end_date: str | None = Query(None)) -> dict:
+    sd, ed = _resolve_dates(start_date, end_date)
+    rows = _report("vendors", lambda: rep.vendor_spend(period, sd, ed))
+    return {"period": _label(period, sd, ed),
+            "vendors": [{"vendor_id": r["vendor_id"], "vendor_name": r["vendor_name"], "category": r["category"],
+                         "cost_usd": r["total_cost"], "event_count": r["event_count"]} for r in rows],
+            "total": round(sum(r["total_cost"] for r in rows), 4)}
+
+
+@app.get("/metrics/category")
+def get_category_breakdown(auth: Auth, rep: Reporting, period: str = Query("30d", pattern=PERIOD_CHOICES),
+                           start_date: str | None = Query(None), end_date: str | None = Query(None)) -> dict:
+    sd, ed = _resolve_dates(start_date, end_date)
+    rows = _report("category", lambda: rep.category_spend(period, sd, ed))
+    return {"period": _label(period, sd, ed),
+            "categories": [{"category": r["category"], "cost_usd": r["total_cost"], "event_count": r["event_count"],
+                            "vendor_count": r["vendor_count"]} for r in rows],
+            "total": round(sum(r["total_cost"] for r in rows), 4)}
+
+
+@app.get("/metrics/workflows")
+def get_workflow_breakdown(auth: Auth, rep: Reporting, period: str = Query("30d", pattern=PERIOD_CHOICES),
+                           start_date: str | None = Query(None), end_date: str | None = Query(None)) -> dict:
+    """Spend by purpose: property builds, recoveries, publications, corrections, unlinked single steps."""
+    sd, ed = _resolve_dates(start_date, end_date)
+    rows = _report("workflows", lambda: rep.purpose_spend(period, sd, ed))
+    return {"period": _label(period, sd, ed),
+            "workflows": [{"purpose": r["purpose"], "workflow_name": r["workflow_name"], "cost_usd": r["total_cost"],
+                           "event_count": r["event_count"], "property_count": r["property_count"]} for r in rows],
+            "total": round(sum(r["total_cost"] for r in rows), 4)}
+
+
+@app.get("/metrics/timeseries")
+def get_timeseries(auth: Auth, rep: Reporting, period: str = Query("30d", pattern=PERIOD_CHOICES),
+                   start_date: str | None = Query(None), end_date: str | None = Query(None)) -> dict:
+    sd, ed = _resolve_dates(start_date, end_date)
+    rows = _report("timeseries", lambda: rep.timeseries(period, sd, ed))
+    return {"period": _label(period, sd, ed),
+            "series": [{"date": r["date"], "cost_usd": r["total_cost"], "event_count": r["event_count"]} for r in rows],
+            "total": round(sum(r["total_cost"] for r in rows), 4)}
+
+
+@app.get("/metrics/builds")
+def get_builds(auth: Auth, rep: Reporting, period: str = Query("30d", pattern=PERIOD_CHOICES),
+               start_date: str | None = Query(None), end_date: str | None = Query(None),
+               property_id: str | None = Query(None), limit: int = Query(200, ge=1, le=1000)) -> dict:
+    """Each property build with its full cost: its own charges plus its linked steps', by vendor."""
+    sd, ed = _resolve_dates(start_date, end_date)
+    rows = _report("builds", lambda: rep.builds(period, sd, ed, property_id=property_id, limit=limit))
+    return {"period": _label(period, sd, ed), "builds": rows}
+
+
+@app.get("/metrics/builds/averages")
+def get_build_averages(auth: Auth, rep: Reporting, period: str = Query("90d", pattern=PERIOD_CHOICES),
+                       start_date: str | None = Query(None), end_date: str | None = Query(None)) -> dict:
+    """Average cost per completed build by vendor, from builds whose steps are linked."""
+    sd, ed = _resolve_dates(start_date, end_date)
+    data = _report("build_averages", lambda: rep.build_averages(period, sd, ed))
+    return {"period": _label(period, sd, ed), **data}
+
+
+@app.get("/metrics/properties")
+def get_properties(auth: Auth, rep: Reporting, period: str = Query("30d", pattern=PERIOD_CHOICES),
+                   start_date: str | None = Query(None), end_date: str | None = Query(None)) -> dict:
+    sd, ed = _resolve_dates(start_date, end_date)
+    rows = _report("properties", lambda: rep.properties(period, sd, ed))
+    return {"period": _label(period, sd, ed), "properties": rows,
+            "total": round(sum(r["total_cost"] for r in rows), 4)}
 
 
 @app.get("/metrics/property/{property_id}")
-def get_property_costs(
-    property_id: str,
-    auth: Auth,
-    repo: PostgresCostConsoleRepository = Depends(get_repo),
-) -> dict:
-    """Cost breakdown for a single property."""
-    import psycopg
-    from psycopg.rows import dict_row
-
-    dsn = os.environ.get("COST_CONSOLE_DSN", "")
-    with psycopg.connect(dsn, row_factory=dict_row) as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT workflow_name, slot_name,
-                   COALESCE(SUM(estimated_cost_usd),0) as cost,
-                   COUNT(*) as events
-            FROM cost_console.operational_estimates
-            WHERE property_id = %s
-            AND occurred_at >= date_trunc('month', CURRENT_DATE)
-            GROUP BY workflow_name, slot_name
-            ORDER BY cost DESC
-            """,
-            (property_id,),
-        )
-        rows = cur.fetchall()
-
-    return {
-        "property_id": property_id,
-        "mtd_by_workflow": [
-            {
-                "workflow_name": r["workflow_name"],
-                "slot_name": r["slot_name"],
-                "cost_usd": round(float(r["cost"]), 4),
-                "events": r["events"],
-            }
-            for r in rows
-        ],
-        "mtd_total": round(sum(float(r["cost"]) for r in rows), 4),
-    }
-
-
-# --- Phase 3: Reporting endpoints ---
-
-@app.get("/metrics/vendors")
-def get_vendor_breakdown(
-    auth: Auth,
-    period: str = Query("30d", regex="^(24h|7d|30d)$"),
-    start_date: str | None = Query(None),
-    end_date: str | None = Query(None),
-    repo: PostgresCostConsoleRepository = Depends(get_repo),
-) -> dict:
+def get_property_costs(property_id: str, auth: Auth, rep: Reporting,
+                       period: str = Query("all", pattern=PERIOD_CHOICES),
+                       start_date: str | None = Query(None), end_date: str | None = Query(None)) -> dict:
+    """One property's cost: total, by vendor, and every build with its own cost."""
+    try:
+        uuid.UUID(property_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="property_id must be a UUID")
     sd, ed = _resolve_dates(start_date, end_date)
-    try:
-        rows = repo.get_vendor_spend(period, start_date=sd, end_date=ed)
-        label = f"{sd} to {ed}" if sd else period
-        return {
-            "period": label,
-            "vendors": [
-                {
-                    "vendor_id": r["vendor_id"],
-                    "vendor_name": r["vendor_name"],
-                    "category": r["category"],
-                    "cost_usd": round(float(r["total_cost"]), 4),
-                    "event_count": r["event_count"],
-                }
-                for r in rows
-            ],
-            "total": round(sum(float(r["total_cost"]) for r in rows), 4),
-        }
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-@app.get("/metrics/category")
-def get_category_breakdown(
-    auth: Auth,
-    period: str = Query("30d", regex="^(24h|7d|30d)$"),
-    repo: PostgresCostConsoleRepository = Depends(get_repo),
-) -> dict:
-    try:
-        rows = repo.get_category_spend(period)
-        return {
-            "period": period,
-            "categories": [
-                {
-                    "category": r["category"],
-                    "cost_usd": round(float(r["total_cost"]), 4),
-                    "event_count": r["event_count"],
-                    "vendor_count": r["vendor_count"],
-                }
-                for r in rows
-            ],
-            "total": round(sum(float(r["total_cost"]) for r in rows), 4),
-        }
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-@app.get("/metrics/workflows")
-def get_workflow_breakdown(
-    auth: Auth,
-    period: str = Query("30d", regex="^(24h|7d|30d)$"),
-    start_date: str | None = Query(None),
-    end_date: str | None = Query(None),
-    repo: PostgresCostConsoleRepository = Depends(get_repo),
-) -> dict:
-    sd, ed = _resolve_dates(start_date, end_date)
-    try:
-        rows = repo.get_workflow_spend(period, start_date=sd, end_date=ed)
-        label = f"{sd} to {ed}" if sd else period
-        return {
-            "period": label,
-            "workflows": [
-                {
-                    "workflow_name": r["workflow_name"],
-                    "cost_usd": round(float(r["total_cost"]), 4),
-                    "event_count": r["event_count"],
-                    "property_count": r["property_count"],
-                }
-                for r in rows
-            ],
-            "total": round(sum(float(r["total_cost"]) for r in rows), 4),
-        }
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-@app.get("/metrics/timeseries")
-def get_timeseries(
-    auth: Auth,
-    period: str = Query("30d", regex="^(24h|7d|30d)$"),
-    start_date: str | None = Query(None),
-    end_date: str | None = Query(None),
-    repo: PostgresCostConsoleRepository = Depends(get_repo),
-) -> dict:
-    sd, ed = _resolve_dates(start_date, end_date)
-    try:
-        rows = repo.get_timeseries_spend(period, start_date=sd, end_date=ed)
-        label = f"{sd} to {ed}" if sd else period
-        return {
-            "period": label,
-            "series": [
-                {
-                    "date": r["date"].isoformat() if r["date"] else None,
-                    "cost_usd": round(float(r["total_cost"]), 4),
-                    "event_count": r["event_count"],
-                }
-                for r in rows
-            ],
-            "total": round(sum(float(r["total_cost"]) for r in rows), 4),
-        }
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    data = _report("property", lambda: rep.property_detail(property_id, period, sd, ed))
+    return {"period": _label(period, sd, ed), **data}
 
 
 # ---------------------------------------------------------------------------
