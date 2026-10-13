@@ -118,9 +118,47 @@ function VendorList({ vendors }) {
   );
 }
 
+function ComponentList({ components }) {
+  return (
+    <div className="space-y-2">
+      {(components ?? []).length === 0 && <div className="text-sm text-white/40">No component costs recorded.</div>}
+      {(components ?? []).map(c => (
+        <div key={c.component} className="flex justify-between gap-4 border-b border-white/6 pb-2 text-sm last:border-0">
+          <span className="text-white/80">{c.component === '' ? '(Empty workflow name)' : c.component}</span>
+          <span className="font-serif text-white">{money(c.cost_usd)}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function BuildCosts({ b }) {
+  return (
+    <details className="rounded-xl border border-white/10 p-4">
+      <summary className="cursor-pointer text-sm">{et(b.started_at)} · {b.status} · {money(b.total_cost)} · <LinkBadge b={b} /></summary>
+      <div className="mt-2 break-all text-xs text-white/35">Run {b.run_id}</div>
+      <div className="mt-4 grid gap-6 md:grid-cols-2">
+        <div><h3 className="mb-3 font-medium">Components</h3><ComponentList components={b.components} /></div>
+        <div><h3 className="mb-3 font-medium">Vendors</h3><VendorList vendors={b.vendors} /></div>
+      </div>
+    </details>
+  );
+}
+
+function ComponentAverages({ averages }) {
+  return (
+    <div className="mt-6 border-t border-white/10 pt-5">
+      <h3 className="mb-2 font-medium">Typical build components</h3>
+      <p className="mb-3 text-xs leading-6 text-white/45">{averages?.component_build_count ?? 0} completed builds, last 90 days. Average and median include zero recorded cost for a component absent from a build.</p>
+      <Table cols={['Component', 'Average', 'Median', 'Builds']} rows={averages?.components ?? []} rowKey={c => c.component}
+             render={c => [c.component === '' ? '(Empty workflow name)' : c.component, money(c.average_cost), money(c.median_cost), c.build_count]} />
+    </div>
+  );
+}
+
 function LinkBadge({ b }) {
   return b.linked
-    ? <span className="inline-flex rounded-full border border-[#0E6B72]/40 bg-[#0E6B72]/20 px-2.5 py-1 text-[0.7rem] font-semibold text-[#6dd5dc]">Complete total</span>
+    ? <span className="inline-flex rounded-full border border-[#0E6B72]/40 bg-[#0E6B72]/20 px-2.5 py-1 text-[0.7rem] font-semibold text-[#6dd5dc]">Recorded total</span>
     : <span className="inline-flex rounded-full border border-amber-400/30 bg-amber-400/10 px-2.5 py-1 text-[0.7rem] font-semibold text-amber-300" title="Ran before the pipeline linked build steps (Oct 11, 2026): only the build's own charges are attached.">Partial — before build linking</span>;
 }
 
@@ -158,6 +196,10 @@ export default function StaylioCostConsoleDashboard() {
   const [build, setBuild] = useState(null);
   const [property, setProperty] = useState(null);
   const [propertyDetail, setPropertyDetail] = useState(null);
+  const [account, setAccount] = useState(null);
+  const [accountDetail, setAccountDetail] = useState(null);
+  const [costViews, setCostViews] = useState(null);
+  const [costViewsError, setCostViewsError] = useState(null);
 
   const params = applied ? `start_date=${applied.start}&end_date=${applied.end}` : `period=${period}`;
 
@@ -182,6 +224,26 @@ export default function StaylioCostConsoleDashboard() {
     setPropertyDetail(null);
     apiFetch(`/metrics/property/${property}?${params}`).then(setPropertyDetail).catch(e => setPropertyDetail({ error: e.message }));
   }, [property]);
+
+  useEffect(() => {
+    if (period === 'custom' && !applied) return;
+    let active = true;
+    setCostViews(null); setCostViewsError(null); setAccount(null); setAccountDetail(null);
+    Promise.all([apiFetch(`/metrics/accounts?${params}`), apiFetch(`/metrics/property-costs?${params}`)])
+      .then(([accounts, properties]) => { if (active) setCostViews({ accounts, properties }); })
+      .catch(e => { if (active) setCostViewsError(e.message); });
+    return () => { active = false; };
+  }, [params, period, applied]);
+
+  useEffect(() => {
+    if (!account) return;
+    let active = true;
+    setAccountDetail(null);
+    apiFetch(`/metrics/account/${account}?${params}`)
+      .then(value => { if (active) setAccountDetail(value); })
+      .catch(e => { if (active) setAccountDetail({ error: e.message }); });
+    return () => { active = false; };
+  }, [account, params]);
 
   const d = data;
   const builds = d?.builds?.builds ?? [];
@@ -245,18 +307,63 @@ export default function StaylioCostConsoleDashboard() {
               <Panel eyebrow={build ? 'Selected build' : 'Average per completed build'} title={build ? `${build.property_name ?? 'Build'} · ${money(build.total_cost)}` : (avg?.completed_linked_builds ? `${money(avg.cost_per_build)} over ${avg.completed_linked_builds} builds` : 'Waiting for a linked build')}
                      body={build ? `${et(build.started_at)} · ${build.status} · ${build.linked_steps} linked steps · run ${build.run_id}` : 'Click a build to see its vendor breakdown.'}>
                 <VendorList vendors={build ? build.vendors : (avg?.vendors ?? []).map(v => ({ vendor_id: v.vendor_id, vendor_name: `${v.vendor_name} (in ${v.builds_using} of ${avg.completed_linked_builds})`, cost_usd: v.cost_per_build }))} />
+                {build ? <div className="mt-6 border-t border-white/10 pt-5"><h3 className="mb-3 font-medium">Components</h3><ComponentList components={build.components} /></div> : <ComponentAverages averages={avg} />}
               </Panel>
             </section>
 
             <section className="mb-10 grid gap-6 xl:grid-cols-[1.2fr_.8fr]">
               <Panel flush eyebrow="Properties" title="Cost by property">
-                <Table cols={['Property', 'Spend this period', 'Charges', 'Builds (all time)', 'Last activity']} rows={d.properties.properties ?? []} rowKey={p => p.property_id ?? 'none'} selectedKey={property}
+                <Table cols={['Property', 'Spend this period', 'Charges', 'Builds (all time)', 'Last activity', 'Account', 'Components']} rows={d.properties.properties ?? []} rowKey={p => p.property_id ?? 'none'} selectedKey={property}
                        onRow={p => p.property_id && setProperty(p.property_id)}
-                       render={p => [p.property_name, <span className="font-serif text-lg text-[#6dd5dc]">{money(p.total_cost)}</span>, p.event_count, p.builds_all_time, et(p.last_activity)]} />
+                       render={p => [p.property_name, <span className="font-serif text-lg text-[#6dd5dc]">{money(p.total_cost)}</span>, p.event_count, p.builds_all_time, et(p.last_activity), p.account_name, <ComponentList components={p.components} />]} />
               </Panel>
               <Panel eyebrow="Selected property" title={propertyDetail?.property_name ?? (property ? 'Loading…' : 'Click a property')} body={propertyDetail && !propertyDetail.error ? `${money(propertyDetail.total_cost)} · ${propertyDetail.builds.length} builds · ${propertyDetail.period}` : propertyDetail?.error}>
                 {propertyDetail && !propertyDetail.error && <VendorList vendors={propertyDetail.by_vendor} />}
+                {propertyDetail && !propertyDetail.error && <div className="mt-6 border-t border-white/10 pt-5"><div className="mb-3 text-sm text-white/50">Account: {propertyDetail.account_name}</div><h3 className="mb-3 font-medium">Components</h3><ComponentList components={propertyDetail.components} /></div>}
               </Panel>
+            </section>
+
+            <section className="mb-10 space-y-6">
+              <Panel flush eyebrow="Accounts" title="Account costs" body="Production recorded costs for every account. Spend and build counts follow the selected period; property counts include all owned properties.">
+                {costViewsError ? <ErrorState message={costViewsError} /> : !costViews ? <LoadingState /> : (
+                  <Table cols={['Account', 'Recorded cost', 'Properties', 'Builds', 'Components']} rows={costViews.accounts.accounts ?? []}
+                         rowKey={a => a.account_id ?? 'unassigned'} selectedKey={account} onRow={a => a.account_id && setAccount(a.account_id)}
+                         render={a => [a.account_name, money(a.total_cost), a.property_count, a.build_count, <ComponentList components={a.components} />]} />
+                )}
+              </Panel>
+              {account && <Panel eyebrow="Selected account" title={accountDetail?.account_name ?? 'Loading account…'}>
+                {accountDetail?.error ? <ErrorState message={accountDetail.error} /> : !accountDetail ? <LoadingState /> : (
+                  <div className="space-y-6">
+                    <div className="text-sm text-white/50">{money(accountDetail.total_cost)} recorded · {accountDetail.property_count} properties · {accountDetail.build_count} builds · {accountDetail.period}</div>
+                    <ComponentList components={accountDetail.components} />
+                    {accountDetail.properties.map(p => <div key={p.property_id ?? 'unassigned'} className="rounded-xl border border-white/10 p-5">
+                      <button className="mb-3 text-left font-serif text-xl text-[#6dd5dc]" onClick={() => p.property_id && setProperty(p.property_id)}>{p.property_name} · {money(p.total_cost)}</button>
+                      <div className="mb-4 text-sm text-white/45">{p.build_count} builds in this period</div>
+                      <ComponentList components={p.components} />
+                      <div className="mt-5 space-y-3">{p.builds.map(b => <BuildCosts key={b.run_id} b={b} />)}</div>
+                    </div>)}
+                  </div>
+                )}
+              </Panel>}
+            </section>
+
+            <section className="mb-10 space-y-6">
+              <Panel flush eyebrow="Property components" title="Property costs" body="Every Production property, including properties with no recorded spend. Click a property to see its builds, components and vendors.">
+                {costViewsError ? <ErrorState message={costViewsError} /> : !costViews ? <LoadingState /> : (
+                  <Table cols={['Property', 'Account', 'Recorded cost', 'Builds', 'Components']} rows={costViews.properties.properties ?? []}
+                         rowKey={p => p.property_id ?? 'unassigned'} selectedKey={property} onRow={p => p.property_id && setProperty(p.property_id)}
+                         render={p => [p.property_name, p.account_name, money(p.total_cost), p.build_count, <ComponentList components={p.components} />]} />
+                )}
+              </Panel>
+              {property && <Panel eyebrow="Property builds" title={propertyDetail?.property_name ?? 'Loading property…'}>
+                {propertyDetail?.error ? <ErrorState message={propertyDetail.error} /> : !propertyDetail ? <LoadingState /> : (
+                  <div className="space-y-5">
+                    <div className="text-sm text-white/50">Account: {propertyDetail.account_name} · {money(propertyDetail.total_cost)} recorded · {propertyDetail.build_count} builds in this period</div>
+                    <ComponentList components={propertyDetail.components} />
+                    <div className="space-y-3">{propertyDetail.builds.map(b => <BuildCosts key={b.run_id} b={b} />)}</div>
+                  </div>
+                )}
+              </Panel>}
             </section>
 
             <section className="mb-10">
