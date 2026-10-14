@@ -49,6 +49,44 @@ function BuildHeadline({ costViews, error }) {
   );
 }
 
+
+function MonthlyPropertyCosts() {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState(null);
+  useEffect(() => {
+    let active = true;
+    apiFetch('/metrics/properties/monthly').then(value => { if (active) setData(value); })
+      .catch(e => { if (active) setError(e.message); });
+    return () => { active = false; };
+  }, []);
+  const columns = ['Month', 'Build', 'Social videos', 'Paid ads', 'Month total'];
+  const cells = m => [`Month ${m.month_number}`, money(m.build), money(m.social_videos), money(m.paid_ads), money(m.month_total)];
+  return (
+    <section className="mb-10">
+      <Panel eyebrow="Property lifetime" title="Monthly cost per property"
+             body="Consecutive 30-day windows from each property's first build, through today. The current window is partial. This lifetime view is independent of the selected period. Month total includes all recorded charges.">
+        {error ? <ErrorState message={error} /> : !data ? <LoadingState /> : (
+          <div className="space-y-8">
+            <div>
+              <h3 className="mb-3 font-medium">Average across properties</h3>
+              <Table cols={['Month', 'Properties', ...columns.slice(1)]} rows={data.averages}
+                     rowKey={m => m.month_number}
+                     render={m => [`Month ${m.month_number}`, m.property_count, ...cells(m).slice(1)]} />
+              <p className="mt-3 text-xs text-[#ABB5C0]">Each average includes only properties that have reached that month, including zero-spend windows.</p>
+            </div>
+            {data.properties.map(p => <div key={p.property_id}>
+              <h3 className="mb-1 font-medium">{p.property_name}</h3>
+              <p className="mb-3 text-xs text-[#ABB5C0]">{p.account_name ?? '(No account recorded)'} · {p.first_build_at ? `First build: ${et(p.first_build_at)}` : 'No build recorded'}</p>
+              {p.months.length > 0 && <Table cols={columns} rows={p.months} rowKey={m => m.month_number}
+                render={m => [<span title={`${et(m.starts_at)} – ${et(m.ends_at)} (end excluded)`}>Month {m.month_number}</span>, ...cells(m).slice(1)]} />}
+            </div>)}
+          </div>
+        )}
+      </Panel>
+    </section>
+  );
+}
+
 function SectionHeader({ eyebrow, title, body }) {
   return (
     <div className="mb-6">
@@ -286,6 +324,7 @@ export default function StaylioCostConsoleDashboard() {
       </nav>
       <main className="relative z-10 mx-auto max-w-[1600px] px-6 py-10 lg:px-10 lg:py-12">
         <BuildHeadline costViews={costViews} error={costViewsError} />
+        <MonthlyPropertyCosts />
         <div className="mb-10 grid gap-8 lg:grid-cols-[1.15fr_.85fr] lg:items-end">
           <div>
             <div className="mb-3 text-[0.72rem] font-medium uppercase tracking-[0.16em] text-[#40CCC1]">Staylio Cost Console</div>

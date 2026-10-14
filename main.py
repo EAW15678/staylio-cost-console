@@ -501,6 +501,11 @@ def get_property_component_costs(auth: Auth, rep: Reporting,
             "total": round(sum(r["total_cost"] for r in rows), 4)}
 
 
+@app.get("/metrics/properties/monthly")
+def get_monthly_property_costs(auth: Auth, rep: Reporting) -> dict:
+    return _report("monthly property costs", rep.monthly_property_costs)
+
+
 # ---------------------------------------------------------------------------
 # Entrypoint
 # ---------------------------------------------------------------------------
