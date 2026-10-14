@@ -509,6 +509,12 @@ class ReportingRepository:
             count = cur.fetchone()["n"]
         return {"component_build_count": count, "components": components}
 
+
+    def monthly_property_costs(self):
+        with self._cur() as cur:
+            cur.execute(MONTHLY_PROPERTY_COSTS_SQL)
+            return monthly_property_result(cur.fetchall())
+
     # --- summary ----------------------------------------------------------
 
     def summary(self) -> dict:
@@ -540,3 +546,82 @@ class ReportingRepository:
             "failed_syncs_today": failed,
             "recent_builds": self.builds("30d", limit=5),
         }
+
+
+# Consecutive 30-day windows, independent of the dashboard calendar-period filter.
+MONTHLY_PROPERTY_COSTS_SQL = """
+WITH RECURSIVE first_build AS (
+    SELECT property_id, MIN(started_at) AS first_build_at
+    FROM public.runs
+    WHERE workflow = 'onboard' AND run_purpose = 'build' AND started_at <= now()
+    GROUP BY property_id
+), run_tree AS (
+    SELECT run_id, workflow AS root_workflow FROM public.runs WHERE parent_run_id IS NULL
+    UNION ALL
+    SELECT child.run_id, tree.root_workflow FROM public.runs child
+    JOIN run_tree tree ON child.parent_run_id = tree.run_id
+), charges AS (
+    SELECT c.property_id, c.created_at, COALESCE(c.total_cost, 0)::numeric AS cost,
+           CASE
+             WHEN concat_ws(' ', c.vendor, c.workflow_name, r.workflow, tree.root_workflow)
+                  ~* '(paid[_ -]?ads?|ad[_ -]?spend|google[_ -]?ads|meta[_ -]?ads|facebook[_ -]?ads|tiktok[_ -]?ads|microsoft[_ -]?ads|bing[_ -]?ads)' THEN 'paid_ads'
+             WHEN concat_ws(' ', c.workflow_name, r.workflow, tree.root_workflow)
+                  ~* '(social|video[_ -]?distribut|distribut.*video)' THEN 'social_videos'
+             WHEN r.workflow IN ('onboard', 'monthly_cycle', 'recover')
+               OR tree.root_workflow IN ('onboard', 'monthly_cycle', 'recover')
+               OR c.workflow_name IN ('onboard', 'monthly_cycle', 'recover') THEN 'build'
+             ELSE 'other'
+           END AS category
+    FROM public.cost_events c
+    LEFT JOIN public.runs r ON r.run_id = c.run_id
+    LEFT JOIN run_tree tree ON tree.run_id = r.run_id
+)
+SELECT p.id AS property_id, p.name AS property_name, a.name AS account_name,
+       f.first_build_at, m.month_number,
+       f.first_build_at + (m.month_number - 1) * interval '720 hours' AS starts_at,
+       f.first_build_at + m.month_number * interval '720 hours' AS ends_at,
+       COALESCE(SUM(c.cost) FILTER (WHERE c.category = 'build'), 0) AS build,
+       COALESCE(SUM(c.cost) FILTER (WHERE c.category = 'social_videos'), 0) AS social_videos,
+       COALESCE(SUM(c.cost) FILTER (WHERE c.category = 'paid_ads'), 0) AS paid_ads,
+       COALESCE(SUM(c.cost), 0) AS month_total
+FROM public.properties p
+LEFT JOIN public.accounts a ON a.id = p.account_id
+LEFT JOIN first_build f ON f.property_id = p.id
+LEFT JOIN LATERAL generate_series(1,
+    FLOOR(EXTRACT(EPOCH FROM (now() - f.first_build_at)) / 2592000)::integer + 1
+) m(month_number) ON true
+LEFT JOIN charges c ON c.property_id = p.id
+    AND c.created_at >= f.first_build_at + (m.month_number - 1) * interval '720 hours'
+    AND c.created_at < f.first_build_at + m.month_number * interval '720 hours'
+    AND c.created_at <= now()
+GROUP BY p.id, p.name, a.name, f.first_build_at, m.month_number
+ORDER BY p.name, p.id, m.month_number
+"""
+
+def monthly_property_result(rows):
+    properties, totals = {}, {}
+    fields = ("build", "social_videos", "paid_ads", "month_total")
+    for row in rows:
+        key = str(row["property_id"])
+        prop = properties.setdefault(key, {
+            "property_id": key, "property_name": row["property_name"],
+            "account_name": row["account_name"],
+            "first_build_at": row["first_build_at"].isoformat() if row["first_build_at"] else None,
+            "months": [],
+        })
+        month = row["month_number"]
+        if month is None:
+            continue
+        values = {field: float(row[field]) for field in fields}
+        prop["months"].append({
+            "month_number": month, **values,
+            "starts_at": row["starts_at"].isoformat(), "ends_at": row["ends_at"].isoformat(),
+        })
+        summary = totals.setdefault(month, {"month_number": month, "property_count": 0,
+                                           **{field: 0.0 for field in fields}})
+        summary["property_count"] += 1
+        for field in fields:
+            summary[field] += values[field]
+    averages = [{**r, **{field: round(r[field] / r["property_count"], 6) for field in fields}}
+                for _, r in sorted(totals.items())]
+    return {"properties": list(properties.values()), "averages": averages}
