@@ -28,6 +28,27 @@ function MetricCard({ label, value, sub, accent="white" }) {
   );
 }
 
+
+function BuildHeadline({ costViews, error }) {
+  const properties = (costViews?.properties.properties ?? []).filter(p => p.property_id && p.build_count > 0);
+  const total = properties.reduce((sum, p) => sum + Number(p.total_cost), 0);
+  const linked = costViews?.linkedAverages;
+  return (
+    <section className="mb-10 rounded-2xl border border-[#40CCC1]/40 bg-[#242C36] p-6 lg:p-8">
+      <h2 className="font-serif text-[22px] font-medium">Average cost per property build</h2>
+      <div className="mt-5 font-serif text-5xl text-[#40CCC1] lg:text-6xl">
+        {error ? 'Unavailable' : !costViews ? 'Loading…' : properties.length ? money(total / properties.length) : '—'}
+      </div>
+      <p className="mt-4 text-sm text-[#ABB5C0]">
+        {error ? error : costViews ? `${properties.length} properties · all-in, includes retries` : 'Loading recorded costs…'}
+      </p>
+      <p className="mt-5 border-t border-[#303A44] pt-4 text-sm text-[#ABB5C0]">
+        Average cost per completed build with linked steps: {error ? 'Unavailable' : !costViews ? 'Loading…' : linked?.completed_linked_builds ? money(linked.cost_per_build) : 'available after the next linked build'}
+      </p>
+    </section>
+  );
+}
+
 function SectionHeader({ eyebrow, title, body }) {
   return (
     <div className="mb-6">
@@ -229,8 +250,8 @@ export default function StaylioCostConsoleDashboard() {
     if (period === 'custom' && !applied) return;
     let active = true;
     setCostViews(null); setCostViewsError(null); setAccount(null); setAccountDetail(null);
-    Promise.all([apiFetch(`/metrics/accounts?${params}`), apiFetch(`/metrics/property-costs?${params}`)])
-      .then(([accounts, properties]) => { if (active) setCostViews({ accounts, properties }); })
+    Promise.all([apiFetch(`/metrics/accounts?${params}`), apiFetch(`/metrics/property-costs?${params}`), apiFetch(`/metrics/builds/averages?${params}`)])
+      .then(([accounts, properties, linkedAverages]) => { if (active) setCostViews({ accounts, properties, linkedAverages }); })
       .catch(e => { if (active) setCostViewsError(e.message); });
     return () => { active = false; };
   }, [params, period, applied]);
@@ -264,6 +285,7 @@ export default function StaylioCostConsoleDashboard() {
         <span className="text-[0.72rem] font-semibold uppercase tracking-[0.14em] text-[#ABB5C0]">Cost Console</span>
       </nav>
       <main className="relative z-10 mx-auto max-w-[1600px] px-6 py-10 lg:px-10 lg:py-12">
+        <BuildHeadline costViews={costViews} error={costViewsError} />
         <div className="mb-10 grid gap-8 lg:grid-cols-[1.15fr_.85fr] lg:items-end">
           <div>
             <div className="mb-3 text-[0.72rem] font-medium uppercase tracking-[0.16em] text-[#40CCC1]">Staylio Cost Console</div>
