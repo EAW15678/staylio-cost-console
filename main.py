@@ -466,6 +466,41 @@ def get_property_costs(property_id: str, auth: Auth, rep: Reporting,
     return {"period": _label(period, sd, ed), **data}
 
 
+
+@app.get("/metrics/accounts")
+def get_account_costs(auth: Auth, rep: Reporting, period: str = Query("30d", pattern=PERIOD_CHOICES),
+                      start_date: str | None = Query(None), end_date: str | None = Query(None)) -> dict:
+    sd, ed = _resolve_dates(start_date, end_date)
+    rows = _report("accounts", lambda: rep.accounts(period, sd, ed))
+    return {"period": _label(period, sd, ed), "accounts": rows,
+            "total": round(sum(r["total_cost"] for r in rows), 4)}
+
+
+@app.get("/metrics/account/{account_id}")
+def get_account_detail(account_id: str, auth: Auth, rep: Reporting,
+                       period: str = Query("30d", pattern=PERIOD_CHOICES),
+                       start_date: str | None = Query(None), end_date: str | None = Query(None)) -> dict:
+    try:
+        uuid.UUID(account_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="account_id must be a UUID")
+    sd, ed = _resolve_dates(start_date, end_date)
+    data = _report("account", lambda: rep.account_detail(account_id, period, sd, ed))
+    if data is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+    return {"period": _label(period, sd, ed), **data}
+
+
+@app.get("/metrics/property-costs")
+def get_property_component_costs(auth: Auth, rep: Reporting,
+                                 period: str = Query("30d", pattern=PERIOD_CHOICES),
+                                 start_date: str | None = Query(None), end_date: str | None = Query(None)) -> dict:
+    sd, ed = _resolve_dates(start_date, end_date)
+    rows = _report("property_costs", lambda: rep.property_costs(period, sd, ed))
+    return {"period": _label(period, sd, ed), "properties": rows,
+            "total": round(sum(r["total_cost"] for r in rows), 4)}
+
+
 # ---------------------------------------------------------------------------
 # Entrypoint
 # ---------------------------------------------------------------------------
